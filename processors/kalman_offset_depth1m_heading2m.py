@@ -154,10 +154,15 @@ def process_data(raw_dir, processed_dir):
     plt.savefig(scatter_path)
     plt.close(scatter_fig)
     print(f"Dive track scatter plot saved to: {scatter_path}")
-    # ---- End Visualization & Summary Section ----
+
+    # --------------------------------------------------------------------------
+    # Carryover corrected UTM converted coordinates.
+    # Create new columns for the final output.
+    df['UTM_X'] = df['Offset_x']
+    df['UTM_Y'] = df['Offset_y']
+    # --------------------------------------------------------------------------
 
     # Rename columns for final CSV.
-    # Existing rename map:
     rename_map = {
         'kalman_lat': 'Latitude',
         'kalman_long': 'Longitude',
@@ -193,7 +198,7 @@ def process_data(raw_dir, processed_dir):
         'Pitch_rad', 'Roll_rad',
         'kalman_yaw_deg', 'kalman_roll_deg', 'kalman_pitch_deg',
         'kalman_x', 'kalman_y',
-        'geotiff_value', 'below_surface', 'Offset_x', 'Offset_y', 'depth_diff',
+        'geotiff_value', 'below_surface', 'depth_diff',
         '_orig_heading_rad',
         # Requested drops for the *uom fields:
         'vehicleRealtimeDualHDGrabData.camera_name_2_uom',
