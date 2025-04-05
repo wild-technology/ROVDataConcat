@@ -2,6 +2,7 @@ from pathlib import Path
 import pandas as pd
 import csv
 
+
 def remove_duplicate_timestamps_prioritizing_event(df):
     """
     Removes duplicate rows in df based on the 'Timestamp' column.
@@ -37,6 +38,7 @@ def remove_duplicate_timestamps_prioritizing_event(df):
     total_removed = df.shape[0] - new_df.shape[0]
     return new_df, duplicate_counts, total_removed
 
+
 def process_data(raw_dir, processed_dir):
     """
     Merges various navigation data sources for ROV navigation, applies an outlier filter for
@@ -54,13 +56,19 @@ def process_data(raw_dir, processed_dir):
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
 
+    # Extract expedition and dive from the raw directory.
+    # Assumes raw_dir is: <root_dir> / "RUMI_processed" / <dive>
+    expedition = raw_dir.parent.parent.name
+    dive = raw_dir.name
+
     print("Running Kalman Concat Process...")
 
-    usbl_file = processed_dir / "NA156_H2024_USBL_Hercules.csv"
-    octans_file = processed_dir / "NA156_H2024_pitch_roll_heading_octans.csv"
-    dvl_file = processed_dir / "NA156_H2024_dvl_lat_long.csv"
-    depth_file = processed_dir / "NA156_H2024_sealog_sensors_merged.csv"
-    output_file = processed_dir / "kalman_prepped_datamerge.csv"
+    # Dynamically build the filenames based on expedition and dive.
+    usbl_file = processed_dir / f"{expedition}_{dive}_USBL_Hercules.csv"
+    octans_file = processed_dir / f"{expedition}_{dive}_pitch_roll_heading_octans.csv"
+    dvl_file = processed_dir / f"{expedition}_{dive}_dvl_lat_long.csv"
+    depth_file = processed_dir / f"{expedition}_{dive}_sealog_sensors_merged.csv"
+    output_file = processed_dir / f"{expedition}_{dive}_filtered_datatable.csv"
 
     # Read each file with Timestamp parsing
     octans_df = pd.read_csv(octans_file, parse_dates=["Timestamp"]).sort_values("Timestamp")
@@ -141,6 +149,3 @@ def process_data(raw_dir, processed_dir):
     # Export to CSV with quoting enabled
     merged_df.to_csv(output_file, index=False, quoting=csv.QUOTE_ALL)
     print(f"Kalman merged data saved to: {output_file}")
-
-# The __main__ block is omitted so that the main script (which passes raw_dir and processed_dir)
-# handles user interaction. For testing purposes you might add an interactive block here.
