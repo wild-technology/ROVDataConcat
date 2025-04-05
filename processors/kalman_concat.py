@@ -56,10 +56,10 @@ def process_data(raw_dir, processed_dir):
 
 	print("Running Kalman Concat Process...")
 
-	usbl_file = raw_dir / "NA156_H2021_USBL_Hercules.csv"
-	octans_file = raw_dir / "NA156_H2021_pitch_roll_heading_octans.csv"
-	dvl_file = raw_dir / "NA156_H2021_dvl_lat_long.csv"
-	depth_file = raw_dir / "NA156_H2021_sealog_sensors_merged.csv"
+	usbl_file = raw_dir / "NA156_H2024_USBL_Hercules.csv"
+	octans_file = raw_dir / "NA156_H2024_pitch_roll_heading_octans.csv"
+	dvl_file = raw_dir / "NA156_H2024_dvl_lat_long.csv"
+	depth_file = raw_dir / "NA156_H2024_sealog_sensors_merged.csv"
 	output_file = processed_dir / "kalman_prepped_datamerge.csv"
 
 	# Read each file with Timestamp parsing

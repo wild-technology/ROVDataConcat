@@ -41,9 +41,9 @@ def process_data(raw_dir, processed_dir):
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
 
-    geotiff_path = raw_dir / "H2021_k2mapping_geotiff_utm4n.tif"
-    csv_path = processed_dir / "NA156_H2021_final_datatable.csv"
-    output_file = processed_dir / "NA156_H2021_filtered_offset_final.csv"
+    geotiff_path = raw_dir / "H2024_k2mapping_geotiff_utm4n.tif"
+    csv_path = processed_dir / "NA156_H2024_final_datatable.csv"
+    output_file = processed_dir / "NA156_H2024_filtered_offset_final.csv"
 
     df = pd.read_csv(csv_path)
 
@@ -78,7 +78,7 @@ def process_data(raw_dir, processed_dir):
     # Resample GeoTIFF at the offset positions (center pixel).
     df['geotiff_value'] = sample_raster_values(geotiff_path, df[x_col], df[y_col])
     df['below_surface'] = df[depth_col] < df['geotiff_value']
-    df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + 1
+    df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + .5
 
     # New function: sample neighboring pixel values from a window.
     def sample_neighbor_values(raster_path, x, y, window_size=3):
@@ -101,7 +101,7 @@ def process_data(raw_dir, processed_dir):
         # If current_depth is less than 1m above the maximum neighbor elevation,
         # adjust it to be exactly 1m above.
         if current_depth - max_neighbor < 1:
-            current_depth = max_neighbor + 1
+            current_depth = max_neighbor + .5
         return current_depth
 
     # Apply neighbor evaluation to adjust depth further if needed.
@@ -111,7 +111,7 @@ def process_data(raw_dir, processed_dir):
     )
 
     # Re-evaluate: ensure each new depth is at least 1m above the center pixel's terrain value.
-    below_threshold = df[depth_col] < (df['geotiff_value'] + 1)
+    below_threshold = df[depth_col] < (df['geotiff_value'])
     num_adjustments = below_threshold.sum()
     if num_adjustments > 0:
         df.loc[below_threshold, depth_col] = df.loc[below_threshold, 'geotiff_value'] + 1

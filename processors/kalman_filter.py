@@ -398,7 +398,7 @@ def process_data(raw_dir, processed_dir):
                 df[col] = np.nan
 
         final_df = df[final_columns]
-        final_output_file = processed_dir / "NA156_H2021_final_datatable.csv"
+        final_output_file = processed_dir / "NA156_H2024_final_datatable.csv"
         final_df.to_csv(final_output_file, index=False, quoting=csv.QUOTE_ALL)
         print(f"Saved final datatable to {final_output_file}")
 
