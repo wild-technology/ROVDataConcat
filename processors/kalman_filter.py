@@ -8,7 +8,8 @@ Applies a Kalman Filter to the merged ROV data, preserving ISO8601 timestamps
 This version handles heading data separately from the main Kalman filter
 to properly account for the circular nature of angular data.
 
-Intended to be executed via the data processing orchestrator.
+Intended to be executed via the data processing orchestrator which passes the
+raw and processed directories (including dive folder information).
 """
 
 from pathlib import Path
@@ -151,6 +152,7 @@ def process_data(raw_dir, processed_dir):
 
     Args:
         raw_dir (Path or str): Directory containing the raw input file.
+                                This should include the dive folder information.
         processed_dir (Path or str): Directory where output files will be saved.
     """
     try:
@@ -158,9 +160,14 @@ def process_data(raw_dir, processed_dir):
         raw_dir = Path(raw_dir).resolve()
         processed_dir = Path(processed_dir).resolve()
 
+        # Extract expedition and dive from raw_dir.
+        # Assumes raw_dir is: <root_dir>/RUMI_processed/<dive>
+        expedition = raw_dir.parent.parent.name
+        dive = raw_dir.name
+
         # Setup file paths using provided directories.
         input_file = raw_dir / "kalman_prepped_datamerge.csv"
-        output_file = processed_dir / "kalman_filtered_data.csv"
+        output_file = processed_dir / f"{expedition}_{dive}_kalman_filtered_data.csv"
 
         if not input_file.exists():
             raise FileNotFoundError(f"Input file not found at {input_file}")
@@ -411,10 +418,14 @@ def process_data(raw_dir, processed_dir):
 
 
 if __name__ == "__main__":
-    # If run directly, use the current directory as the raw data directory
-    # and a subdirectory "processed" for output.
-    raw_directory = Path.cwd().resolve()
-    processed_directory = raw_directory / "processed"
+    # For testing purposes, if run directly, allow optional command-line arguments.
+    # Otherwise, default to current directory as raw_dir and a "processed" subdirectory.
+    if len(sys.argv) >= 3:
+        raw_directory = Path(sys.argv[1])
+        processed_directory = Path(sys.argv[2])
+    else:
+        raw_directory = Path.cwd().resolve()
+        processed_directory = raw_directory / "processed"
     processed_directory.mkdir(parents=True, exist_ok=True)
     exit_code = process_data(raw_directory, processed_directory)
     sys.exit(exit_code)

@@ -1,3 +1,23 @@
+#!/usr/bin/env python3
+"""
+UTM Assessment and Vehicle Offset Processing Script
+
+Performs UTM assessment and adjusts vehicle positioning.
+After offsetting the vehicle’s (x, y) and initially adjusting depth
+based on the sampled center pixel of the GeoTIFF, this function further
+checks the 3x3 neighborhood around the offset position. If any neighboring
+pixel is within 1m of the vehicle’s depth (i.e. if the vehicle is less than
+1m above the maximum neighbor value), the depth is increased to be 1m above
+that neighbor value.
+
+After this neighbor evaluation, the script re-evaluates that the new depth
+is at least 1m above the terrain (center pixel value) and adjusts if necessary.
+
+Finally, the script produces a scatter plot of the offset positions colored by
+depth difference (Depth – Terrain) in which any negative depth difference is shown in RED.
+It also prints an on-screen summary indicating how many depth values remain below terrain.
+"""
+
 from pathlib import Path
 import pandas as pd
 import csv
@@ -18,7 +38,7 @@ def safe_get_loc(df, col_name):
         # If loc is array-like, return the first element.
         return int(loc[0])
 
-def process_data(raw_dir, processed_dir):
+def process_data(raw_dir, processed_dir, geotiff_file):
     """
     Performs UTM assessment and adjusts vehicle positioning.
     After offsetting the vehicle’s (x, y) and initially adjusting depth
@@ -34,16 +54,25 @@ def process_data(raw_dir, processed_dir):
     Finally, the script produces a scatter plot of the offset positions colored by
     depth difference (Depth – Terrain) in which any negative depth difference is shown in RED.
     It also prints an on-screen summary indicating how many depth values remain below terrain.
+
+    The output filenames incorporate the dive and expedition information, which are
+    derived from the raw_dir path. The GeoTIFF location is provided by the user.
     """
     print("Running UTM Assessment Process...")
 
     # Convert raw_dir and processed_dir to absolute Path objects.
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
+    geotiff_path = Path(geotiff_file).resolve()
 
-    geotiff_path = raw_dir / "H2024_k2mapping_geotiff_utm4n.tif"
-    csv_path = processed_dir / "NA156_H2024_final_datatable.csv"
-    output_file = processed_dir / "NA156_H2024_filtered_offset_final.csv"
+    # Extract expedition and dive from raw_dir.
+    # Assumes raw_dir is: <root_dir> / "RUMI_processed" / <dive>
+    expedition = raw_dir.parent.parent.name
+    dive = raw_dir.name
+
+    # Build filenames incorporating the dive and expedition.
+    csv_path = processed_dir / f"{expedition}_{dive}_final_datatable.csv"
+    output_file = processed_dir / f"{expedition}_{dive}_filtered_offset_final.csv"
 
     df = pd.read_csv(csv_path)
 
@@ -53,14 +82,10 @@ def process_data(raw_dir, processed_dir):
 
     # -------------------------------------------------------------------------
     # 1) Preserve the original heading before using it for filtering/offset
-    #    So if "Heading_rad" in your CSV is the filtered heading, you likely have
-    #    some "original heading" you want in the final output. If the CSV truly
-    #    has only one heading column (Heading_rad), then consider it "filtered"
-    #    for the offset, but we still want to preserve a copy for output.
     # -------------------------------------------------------------------------
     df['_orig_heading_rad'] = df[heading_rad_col].copy()
 
-    # Offset (x, y) by 2m backwards along Heading_rad (per code; comment mentioned 1m)
+    # Offset (x, y) by 2m backwards along Heading_rad.
     df[x_col] = df[x_col] - (2 * np.cos(df[heading_rad_col]))
     df[y_col] = df[y_col] - (2 * np.sin(df[heading_rad_col]))
 
@@ -78,7 +103,7 @@ def process_data(raw_dir, processed_dir):
     # Resample GeoTIFF at the offset positions (center pixel).
     df['geotiff_value'] = sample_raster_values(geotiff_path, df[x_col], df[y_col])
     df['below_surface'] = df[depth_col] < df['geotiff_value']
-    df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + .5
+    df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + 0.5
 
     # New function: sample neighboring pixel values from a window.
     def sample_neighbor_values(raster_path, x, y, window_size=3):
@@ -101,7 +126,7 @@ def process_data(raw_dir, processed_dir):
         # If current_depth is less than 1m above the maximum neighbor elevation,
         # adjust it to be exactly 1m above.
         if current_depth - max_neighbor < 1:
-            current_depth = max_neighbor + .5
+            current_depth = max_neighbor + 0.5
         return current_depth
 
     # Apply neighbor evaluation to adjust depth further if needed.
@@ -150,7 +175,7 @@ def process_data(raw_dir, processed_dir):
     scatter_ax.set_ylabel("Offset Y")
     scatter_ax.set_title("Dive Track (Offset Positions) Colored by Depth Difference")
     scatter_ax.legend()
-    scatter_path = processed_dir / "dive_track_scatter.png"
+    scatter_path = processed_dir / f"{expedition}_{dive}_dive_track_scatter.png"
     plt.savefig(scatter_path)
     plt.close(scatter_fig)
     print(f"Dive track scatter plot saved to: {scatter_path}")
@@ -215,4 +240,5 @@ def process_data(raw_dir, processed_dir):
 if __name__ == "__main__":
     raw_dir = input("Enter the raw directory for processing: ").strip()
     processed_dir = input("Enter the processed directory for output: ").strip()
-    process_data(raw_dir, processed_dir)
+    geotiff_file = input("Enter the full path for the GeoTIFF file: ").strip()
+    process_data(raw_dir, processed_dir, geotiff_file)

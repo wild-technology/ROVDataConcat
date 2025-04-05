@@ -5,27 +5,35 @@ import rasterio
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 def process_data(raw_dir, processed_dir):
     """
     Performs Kalman filter assessment on processed navigation data.
+    Uses the directories (which include dive information) passed from the main script.
 
     Parameters
     ----------
     raw_dir : Path or str
-        Directory containing raw data.
+        Directory containing raw data (including the dive folder).
     processed_dir : Path or str
-        Directory where processed data is saved and where output will be saved.
+        Directory where processed data is saved and where output will be written.
     """
     # Convert to absolute Path objects.
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
+
     # Ensure the processed directory exists.
     processed_dir.mkdir(parents=True, exist_ok=True)
 
     print("Running Kalman Assessment Process...")
 
+    # Assume that the previous module (kalman_filter) created this file in the processed directory.
     input_file = processed_dir / "kalman_filtered_data.csv"
     output_file = processed_dir / "kalman_assessment.csv"
+
+    if not input_file.is_file():
+        print(f"Error: Expected input file '{input_file}' not found.")
+        return
 
     # Read CSV with low_memory set to False to avoid DtypeWarning.
     df = pd.read_csv(input_file, parse_dates=['Timestamp'], low_memory=False)
