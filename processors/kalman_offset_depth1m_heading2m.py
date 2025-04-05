@@ -38,7 +38,7 @@ def safe_get_loc(df, col_name):
         # If loc is array-like, return the first element.
         return int(loc[0])
 
-def process_data(raw_dir, processed_dir, geotiff_file):
+def process_data(raw_dir, processed_dir):
     """
     Performs UTM assessment and adjusts vehicle positioning.
     After offsetting the vehicle’s (x, y) and initially adjusting depth
@@ -54,16 +54,12 @@ def process_data(raw_dir, processed_dir, geotiff_file):
     Finally, the script produces a scatter plot of the offset positions colored by
     depth difference (Depth – Terrain) in which any negative depth difference is shown in RED.
     It also prints an on-screen summary indicating how many depth values remain below terrain.
-
-    The output filenames incorporate the dive and expedition information, which are
-    derived from the raw_dir path. The GeoTIFF location is provided by the user.
     """
     print("Running UTM Assessment Process...")
 
     # Convert raw_dir and processed_dir to absolute Path objects.
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
-    geotiff_path = Path(geotiff_file).resolve()
 
     # Extract expedition and dive from raw_dir.
     # Assumes raw_dir is: <root_dir> / "RUMI_processed" / <dive>
@@ -71,6 +67,7 @@ def process_data(raw_dir, processed_dir, geotiff_file):
     dive = raw_dir.name
 
     # Build filenames incorporating the dive and expedition.
+    geotiff_path = raw_dir / f"{dive}_k2mapping_geotiff_utm4n.tif"
     csv_path = processed_dir / f"{expedition}_{dive}_final_datatable.csv"
     output_file = processed_dir / f"{expedition}_{dive}_filtered_offset_final.csv"
 
@@ -240,5 +237,4 @@ def process_data(raw_dir, processed_dir, geotiff_file):
 if __name__ == "__main__":
     raw_dir = input("Enter the raw directory for processing: ").strip()
     processed_dir = input("Enter the processed directory for output: ").strip()
-    geotiff_file = input("Enter the full path for the GeoTIFF file: ").strip()
-    process_data(raw_dir, processed_dir, geotiff_file)
+    process_data(raw_dir, processed_dir)
