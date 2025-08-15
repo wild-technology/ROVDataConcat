@@ -166,7 +166,7 @@ def process_data(raw_dir, processed_dir):
         dive = raw_dir.name
 
         # Setup file paths using provided directories.
-        input_file = raw_dir / "kalman_prepped_datamerge.csv"
+        input_file = raw_dir / f"{expedition}_{dive}_filtered_datatable.csv"  # Corrected to match the actual file name
         output_file = processed_dir / f"{expedition}_{dive}_kalman_filtered_data.csv"
 
         if not input_file.exists():
@@ -183,7 +183,6 @@ def process_data(raw_dir, processed_dir):
         original_count = len(df)
         df = df[df["Herc_Depth_1"] <= -20]
         print(f"Filtered to {len(df)} rows where depth <= -20m (removed {original_count - len(df)} rows)")
-        df.sort_values(by="Timestamp", inplace=True)
 
         # Remove duplicate timestamps BEFORE Kalman filter processing.
         if df["Timestamp"].duplicated().any():
@@ -200,9 +199,6 @@ def process_data(raw_dir, processed_dir):
         utm_proj = usbl_proj if usbl_success > 0 else (dvl_proj if dvl_success > 0 else None)
         if usbl_success == 0 and dvl_success == 0:
             print("WARNING: No coordinates could be converted to UTM. Check lat/long data.")
-            if len(df) > 0:
-                print("\nFirst few rows of lat/long data:")
-                print(df[["Lat_USBL", "Long_USBL", "Lat_DVL", "Long_DVL"]].head())
 
         # Convert orientation to radians.
         df["Heading_rad"] = df["Heading"].apply(deg2rad)

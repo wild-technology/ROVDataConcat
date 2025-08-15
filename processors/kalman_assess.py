@@ -33,8 +33,10 @@ def process_data(raw_dir, processed_dir):
 
     print("Running Kalman Assessment Process...")
 
-    # Assume that the previous module (kalman_filter) created this file in the processed directory.
-    input_file = processed_dir / "kalman_filtered_data.csv"
+    # Adjust the input file path to match the actual file name format: "NA173_H2102_kalman_filtered_data.csv"
+    expedition = raw_dir.parent.parent.name  # Extract the expedition name
+    dive = raw_dir.name  # Extract the dive folder name
+    input_file = processed_dir / f"NA173_{dive}_kalman_filtered_data.csv"  # Corrected file path
     output_file = processed_dir / "kalman_assessment.csv"
 
     if not input_file.is_file():

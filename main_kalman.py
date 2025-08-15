@@ -24,8 +24,8 @@ def get_directories():
     Prompts the user for the root directory, dive folder to process,
     and the processed output directory.
     """
-    # Set the default root directory.
-    default_root = Path("E:/RUMI/NAUTILUS-CRUISE-COPY2/NA156")
+    # Set the default root directory to Z:\NA173.
+    default_root = Path("Z:/NA173")
     root_dir = prompt_directory("Enter the root directory", default_root)
 
     # Ask for the dive folder (e.g., H2021).

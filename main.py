@@ -31,7 +31,7 @@ Example flow:
      b) "Do you want to process process_dat? (yes/no)"
      c) etc.
   4) The script either runs or skips each processing step.
-  5) Final summary message.
+  5) Final summary message indicates all selected processing steps are done.
 
 Author: Jonathan Fiely
 Date: 20 Feb 2025
@@ -62,7 +62,7 @@ def get_directories():
       (2) The parent directory where the 'RUMI_processed' folder will be created
 
     Defaults are provided if the user inputs nothing.
-    Default: "E:/RUMI/NAUTILUS-CRUISE-COPY2/NA156"
+    Default: "Z:/NA173"
 
     This function:
       - Ensures the raw data directory exists
@@ -80,7 +80,7 @@ def get_directories():
     """
     logging.debug("Entered get_directories()")
     # Use pathlib for consistent path handling
-    default_dir = Path("E:/RUMI/NAUTILUS-CRUISE-COPY2/NA156")
+    default_dir = Path("Z:/NA173")
     logging.debug(f"Default directory set to: {default_dir}")
 
     # Prompt for the raw data directory (root_dir)
