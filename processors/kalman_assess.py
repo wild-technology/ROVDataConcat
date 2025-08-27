@@ -1,9 +1,5 @@
 from pathlib import Path
 import pandas as pd
-import csv
-import rasterio
-import numpy as np
-import matplotlib.pyplot as plt
 from pathlib import Path
 import pandas as pd
 import csv
@@ -25,6 +21,7 @@ def process_data(raw_dir, processed_dir):
         Directory where processed data is saved and where output will be written.
     """
     # Convert to absolute Path objects.
+    # Convert to absolute Path objects.
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
 
@@ -33,10 +30,12 @@ def process_data(raw_dir, processed_dir):
 
     print("Running Kalman Assessment Process...")
 
-    # Adjust the input file path to match the actual file name format: "NA173_H2102_kalman_filtered_data.csv"
-    expedition = raw_dir.parent.parent.name  # Extract the expedition name
-    dive = raw_dir.name  # Extract the dive folder name
-    input_file = processed_dir / f"NA173_{dive}_kalman_filtered_data.csv"  # Corrected file path
+    # Derive expedition/dive: raw_dir should be ...\<EXPEDITION>\<DIVE>
+    dive = raw_dir.name
+    expedition = raw_dir.parent.name  # not parent.parent
+
+    # Match what kalman_filter writes: "{expedition}_{dive}_kalman_filtered_data.csv"
+    input_file = processed_dir / f"{expedition}_{dive}_kalman_filtered_data.csv"
     output_file = processed_dir / "kalman_assessment.csv"
 
     if not input_file.is_file():

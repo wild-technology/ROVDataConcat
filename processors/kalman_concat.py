@@ -58,8 +58,9 @@ def process_data(raw_dir, processed_dir):
 
     # Extract expedition and dive from the raw directory.
     # Assumes raw_dir is: <root_dir> / "RUMI_processed" / <dive>
-    expedition = raw_dir.parent.parent.name
+    # raw_dir should be: <root>\<EXPEDITION>\<DIVE>
     dive = raw_dir.name
+    expedition = raw_dir.parent.name
 
     print("Running Kalman Concat Process...")
 
@@ -70,11 +71,11 @@ def process_data(raw_dir, processed_dir):
     depth_file = processed_dir / f"{expedition}_{dive}_sealog_sensors_merged.csv"
     output_file = processed_dir / f"{expedition}_{dive}_filtered_datatable.csv"
 
-    # Read each file with Timestamp parsing
-    octans_df = pd.read_csv(octans_file, parse_dates=["Timestamp"]).sort_values("Timestamp")
-    usbl_df = pd.read_csv(usbl_file, parse_dates=["Timestamp"]).sort_values("Timestamp")
-    dvl_df = pd.read_csv(dvl_file, parse_dates=["Timestamp"]).sort_values("Timestamp")
-    depth_df = pd.read_csv(depth_file, parse_dates=["Timestamp"], quotechar='"').sort_values("Timestamp")
+    octans_df = pd.read_csv(octans_file, parse_dates=["Timestamp"], low_memory=False).sort_values("Timestamp")
+    usbl_df = pd.read_csv(usbl_file, parse_dates=["Timestamp"], low_memory=False).sort_values("Timestamp")
+    dvl_df = pd.read_csv(dvl_file, parse_dates=["Timestamp"], low_memory=False).sort_values("Timestamp")
+    depth_df = pd.read_csv(depth_file, parse_dates=["Timestamp"], low_memory=False, quotechar='"').sort_values(
+        "Timestamp")
 
     # Rename columns for clarity
     usbl_df.rename(columns={"Latitude": "Lat_USBL", "Longitude": "Long_USBL", "Accuracy": "Accuracy_USBL"},

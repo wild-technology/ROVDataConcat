@@ -6,7 +6,7 @@ Applies a Kalman Filter to the merged ROV data, preserving ISO8601 timestamps
 (e.g., "2023-11-01T19:00:01Z") in the final CSV.
 
 This version handles heading data separately from the main Kalman filter
-to properly account for the circular nature of angular data. asdfasdfsdfgcxsdvdsffgds
+to properly account for the circular nature of angular data.
 
 Intended to be executed via the data processing orchestrator which passes the
 raw and processed directories (including dive folder information).
@@ -160,13 +160,12 @@ def process_data(raw_dir, processed_dir):
         raw_dir = Path(raw_dir).resolve()
         processed_dir = Path(processed_dir).resolve()
 
-        # Extract expedition and dive from raw_dir.
-        # Assumes raw_dir is: <root_dir>/RUMI_processed/<dive>
-        expedition = raw_dir.parent.parent.name
+        # raw_dir should be: <root>/<EXPEDITION>/<DIVE>
         dive = raw_dir.name
+        expedition = raw_dir.parent.name
 
         # Setup file paths using provided directories.
-        input_file = raw_dir / f"{expedition}_{dive}_filtered_datatable.csv"  # Corrected to match the actual file name
+        input_file = processed_dir / f"{expedition}_{dive}_filtered_datatable.csv"
         output_file = processed_dir / f"{expedition}_{dive}_kalman_filtered_data.csv"
 
         if not input_file.exists():
@@ -176,7 +175,8 @@ def process_data(raw_dir, processed_dir):
         print(f"Output will be saved to: {output_file}")
 
         # Read CSV with timestamp parsing.
-        df = pd.read_csv(input_file, parse_dates=["Timestamp"])
+        df = pd.read_csv(input_file, parse_dates=["Timestamp"], low_memory=False)
+
         print(f"Loaded {len(df)} rows from input file.")
 
         # Filter rows with depth <= -20 m.
@@ -401,7 +401,7 @@ def process_data(raw_dir, processed_dir):
                 df[col] = np.nan
 
         final_df = df[final_columns]
-        final_output_file = processed_dir / "NA156_H2024_final_datatable.csv"
+        final_output_file = processed_dir / f"{expedition}_{dive}_final_datatable.csv"
         final_df.to_csv(final_output_file, index=False, quoting=csv.QUOTE_ALL)
         print(f"Saved final datatable to {final_output_file}")
 
