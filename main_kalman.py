@@ -20,10 +20,10 @@ def prompt_directory(prompt, default=None, must_exist=True):
             return path.resolve()
 
 def get_directories():
-    """Prompt for base path, expedition, and dive; build raw and processed dirs.
+    """Prompt for base, expedition, dive; use RUMI_processed as canonical root.
     Structure:
-      raw_dir = <base>/<EXPEDITION>/<DIVE>
       processed_dir = <base>/<EXPEDITION>/RUMI_processed/<DIVE>
+      raw_dir = processed_dir  # inputs live here as well
     """
     default_base = Path("Z:/")
     base_dir = prompt_directory("Enter the base directory containing expeditions", default_base)
@@ -38,20 +38,17 @@ def get_directories():
         print("Error: Dive folder cannot be empty.")
         dive = input("Enter the dive folder (e.g., H2075): ").strip()
 
-    raw_dir = (base_dir / expedition / dive).resolve()
-    if not raw_dir.is_dir():
-        print(f"Error: The raw data directory '{raw_dir}' does not exist.")
+    processed_dir = (base_dir / expedition / "RUMI_processed" / dive).resolve()
+    if not processed_dir.is_dir():
+        print(f"Error: The dive folder '{processed_dir}' does not exist.")
         sys.exit(1)
 
-    processed_default = (base_dir / expedition / "RUMI_processed" / dive).resolve()
-    processed_input = input(f"Enter the directory for processed data [default: {processed_default}]: ").strip()
-    processed_dir = Path(processed_input).resolve() if processed_input else processed_default
-    processed_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = processed_dir  # keep module signatures, but point at processed_dir
 
     print(f"\n  • Expedition: {expedition}")
     print(f"  • Dive: {dive}")
-    print(f"  • Raw data directory: {raw_dir}")
-    print(f"  • Processed data directory: {processed_dir}")
+    print(f"  • Data directory (raw_dir): {raw_dir}")
+    print(f"  • Processed directory:      {processed_dir}")
     return raw_dir, processed_dir
 
 def process_module(module_name, raw_dir, processed_dir):
@@ -61,19 +58,21 @@ def process_module(module_name, raw_dir, processed_dir):
     Parameters
     ----------
     module_name : str
-        Name of the module to process.
+        Name of the module to process (without the 'processes.' prefix).
     raw_dir : Path
         Directory containing raw data.
     processed_dir : Path
         Directory where processed data will be saved.
     """
     try:
-        module = importlib.import_module(f"{module_name}")
+        module = importlib.import_module(f"processors.{module_name}")
+
         # Add a special note for the UTM assessment module.
         if module_name == "kalman_offset_depth1m_heading2m":
             print(
                 "\nNOTE: The offset Assessment step will offset the vehicle's location and save a final data file for upload in Unreal."
             )
+
         proceed = input(f"Do you want to process {module_name}? (yes/no): ").strip().lower()
         if proceed == "yes":
             print(f"\nProcessing {module_name}...")
@@ -82,8 +81,9 @@ def process_module(module_name, raw_dir, processed_dir):
         else:
             print(f"Skipping {module_name}.")
     except ImportError as e:
-        print(f"Error importing {module_name}: {e}")
+        print(f"Error importing processes.{module_name}: {e}")
         sys.exit(1)
+
 
 def main():
     """
