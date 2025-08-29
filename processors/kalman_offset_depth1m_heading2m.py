@@ -61,10 +61,9 @@ def process_data(raw_dir, processed_dir):
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
 
-    # Extract expedition and dive from raw_dir.
-    # Assumes raw_dir is: <root_dir> / "RUMI_processed" / <dive>
-    expedition = raw_dir.parent.parent.name
-    dive = raw_dir.name
+    # Extract expedition and dive from processed_dir: <base>/<EXPEDITION>/RUMI_processed/<DIVE>
+    expedition = processed_dir.parent.parent.name
+    dive = processed_dir.name
 
     # Build filenames incorporating the dive and expedition.
     geotiff_path = raw_dir / f"{dive}_k2mapping_geotiff_utm4n.tif"

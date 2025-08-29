@@ -160,9 +160,9 @@ def process_data(raw_dir, processed_dir):
         raw_dir = Path(raw_dir).resolve()
         processed_dir = Path(processed_dir).resolve()
 
-        # raw_dir should be: <root>/<EXPEDITION>/<DIVE>
-        dive = raw_dir.name
-        expedition = raw_dir.parent.name
+        # Determine expedition and dive from processed_dir: <base>/<EXPEDITION>/RUMI_processed/<DIVE>
+        dive = processed_dir.name
+        expedition = processed_dir.parent.parent.name
 
         # Setup file paths using provided directories.
         input_file = processed_dir / f"{expedition}_{dive}_filtered_datatable.csv"

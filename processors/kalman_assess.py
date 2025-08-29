@@ -30,13 +30,13 @@ def process_data(raw_dir, processed_dir):
 
     print("Running Kalman Assessment Process...")
 
-    # Derive expedition/dive: raw_dir should be ...\<EXPEDITION>\<DIVE>
-    dive = raw_dir.name
-    expedition = raw_dir.parent.name  # not parent.parent
+    # Derive expedition/dive from processed_dir: <base>/<EXPEDITION>/RUMI_processed/<DIVE>
+    dive = processed_dir.name
+    expedition = processed_dir.parent.parent.name
 
     # Match what kalman_filter writes: "{expedition}_{dive}_kalman_filtered_data.csv"
     input_file = processed_dir / f"{expedition}_{dive}_kalman_filtered_data.csv"
-    output_file = processed_dir / "kalman_assessment.csv"
+    output_file = processed_dir / f"{expedition}_{dive}_kalman_assessment.csv"
 
     if not input_file.is_file():
         print(f"Error: Expected input file '{input_file}' not found.")
@@ -128,6 +128,6 @@ def process_data(raw_dir, processed_dir):
         ax.legend()
 
     plt.tight_layout()
-    plot_file = processed_dir / "kalman_assessment_plots.png"
+    plot_file = processed_dir / f"{expedition}_{dive}_kalman_assessment_plots.png"
     plt.savefig(plot_file)
     print(f"Kalman assessment plots saved to: {plot_file}")

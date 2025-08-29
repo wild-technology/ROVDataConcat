@@ -20,35 +20,39 @@ def prompt_directory(prompt, default=None, must_exist=True):
             return path.resolve()
 
 def get_directories():
+    """Prompt for base path, expedition, and dive; build raw and processed dirs.
+    Structure:
+      raw_dir = <base>/<EXPEDITION>/<DIVE>
+      processed_dir = <base>/<EXPEDITION>/RUMI_processed/<DIVE>
     """
-    Prompts the user for the root directory, dive folder to process,
-    and the processed output directory.
-    """
-    # Set the default root directory to Z:\NA173.
-    default_root = Path("Z:/NA173")
-    root_dir = prompt_directory("Enter the root directory", default_root)
+    default_base = Path("Z:/")
+    base_dir = prompt_directory("Enter the base directory containing expeditions", default_base)
 
-    # Ask for the dive folder (e.g., H2021).
-    dive = input("Enter the dive folder to process (e.g., H2021): ").strip()
+    expedition = input("Enter the expedition (e.g., NA173): ").strip()
+    while not expedition:
+        print("Error: Expedition cannot be empty.")
+        expedition = input("Enter the expedition (e.g., NA173): ").strip()
+
+    dive = input("Enter the dive folder (e.g., H2075): ").strip()
     while not dive:
         print("Error: Dive folder cannot be empty.")
-        dive = input("Enter the dive folder to process (e.g., H2021): ").strip()
+        dive = input("Enter the dive folder (e.g., H2075): ").strip()
 
-    # Construct the raw data directory based on the dive folder.
-    raw_dir = root_dir / "RUMI_processed" / dive
+    raw_dir = (base_dir / expedition / dive).resolve()
     if not raw_dir.is_dir():
         print(f"Error: The raw data directory '{raw_dir}' does not exist.")
         sys.exit(1)
 
-    # Set the default processed directory (same as raw_dir in this case).
-    processed_default = raw_dir
+    processed_default = (base_dir / expedition / "RUMI_processed" / dive).resolve()
     processed_input = input(f"Enter the directory for processed data [default: {processed_default}]: ").strip()
-    processed_dir = Path(processed_input) if processed_input else processed_default
+    processed_dir = Path(processed_input).resolve() if processed_input else processed_default
     processed_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n  • Raw data directory: {raw_dir.resolve()}")
-    print(f"  • Processed data directory: {processed_dir.resolve()}")
-    return raw_dir.resolve(), processed_dir.resolve()
+    print(f"\n  • Expedition: {expedition}")
+    print(f"  • Dive: {dive}")
+    print(f"  • Raw data directory: {raw_dir}")
+    print(f"  • Processed data directory: {processed_dir}")
+    return raw_dir, processed_dir
 
 def process_module(module_name, raw_dir, processed_dir):
     """
@@ -64,7 +68,7 @@ def process_module(module_name, raw_dir, processed_dir):
         Directory where processed data will be saved.
     """
     try:
-        module = importlib.import_module(f"processors.{module_name}")
+        module = importlib.import_module(f"{module_name}")
         # Add a special note for the UTM assessment module.
         if module_name == "kalman_offset_depth1m_heading2m":
             print(

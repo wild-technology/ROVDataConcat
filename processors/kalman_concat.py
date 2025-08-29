@@ -57,10 +57,10 @@ def process_data(raw_dir, processed_dir):
     processed_dir = Path(processed_dir).resolve()
 
     # Extract expedition and dive from the raw directory.
-    # Assumes raw_dir is: <root_dir> / "RUMI_processed" / <dive>
-    # raw_dir should be: <root>\<EXPEDITION>\<DIVE>
-    dive = raw_dir.name
-    expedition = raw_dir.parent.name
+    # Extract expedition and dive using processed_dir: <base>/<EXPEDITION>/RUMI_processed/<DIVE>
+    # Standardized structure adopted across modules.
+    dive = processed_dir.name
+    expedition = processed_dir.parent.parent.name
 
     print("Running Kalman Concat Process...")
 

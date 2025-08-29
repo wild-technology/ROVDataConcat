@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Expedition Data Processing Orchestrator (v2) — fixed pathing
+Expedition Data Processing Orchestrator (v2) — fixed pathing, non-interactive
 
-Key change:
-- Processed output directory is now always <root_dir>/RUMI_processed to match
-  current processors which only accept `root_dir` and write relative to it.
+Runs all modules automatically, aborts on first error.
+Processed output directory: <root_dir>/RUMI_processed
 """
 
 import logging
@@ -45,7 +44,6 @@ def get_directories():
         logging.debug(f"User re-input for raw data directory: '{raw_input_val}'")
         root_dir = Path(raw_input_val) if raw_input_val else default_dir
 
-    # Processed dir is always under root_dir to match current processors' behavior
     processed_dir = root_dir / "RUMI_processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
     logging.debug(f"Processed data directory created or verified: {processed_dir}")
@@ -57,30 +55,30 @@ def get_directories():
     return root_dir, processed_dir
 
 
-def process_script(script_module, root_dir):
+def run_step(script_module, root_dir) -> bool:
     """
-    Prompt to run script_module.process_data(root_dir).
+    Non-interactive: run script_module.process_data(root_dir).
+    Returns True on success, False on any exception (after logging).
     """
-    logging.debug(f"Processing module: {script_module.__name__}")
-    module_name = script_module.__name__.split('.')[-1] if '.' in script_module.__name__ else script_module.__name__
-    proceed = input(f"Do you want to process {module_name}? (yes/no): ").strip().lower()
-    logging.debug(f"User response for {module_name}: '{proceed}'")
-    if proceed == "yes":
-        print(f"\nProcessing {module_name}...")
-        logging.debug(f"Calling process_data() for {module_name}")
+    name = script_module.__name__.split('.')[-1]
+    logging.debug(f"Starting {name}")
+    print(f"\nProcessing {name}...")
+    try:
         script_module.process_data(root_dir)
-        logging.debug(f"Finished process_data() for {module_name}")
-        print(f"Finished processing {module_name}.")
-    else:
-        print(f"Skipping {module_name}.")
-        logging.debug(f"Skipped processing for {module_name}")
-    return proceed
+        print(f"Finished {name}.")
+        logging.debug(f"Finished {name}")
+        return True
+    except Exception as e:
+        logging.exception(f"{name} failed")
+        print(f"\nERROR in {name}: {e}\nAborting subsequent steps.")
+        return False
 
 
 def main():
     logging.debug("Starting main()")
     print("--------------------------------------------------")
     print("     Expedition Data Processing Orchestrator (v2) ")
+    print("                 Non-interactive                  ")
     print("--------------------------------------------------")
 
     # 1) Get directories
@@ -89,46 +87,43 @@ def main():
 
     # 2) Dive summaries
     print("\n[ Step 1 ]: Dive Summaries")
-    dive_summaries_proceed = process_script(dive_summaries, root_dir)
-    logging.debug(f"Dive summaries processing decision: {dive_summaries_proceed}")
+    if not run_step(dive_summaries, root_dir):
+        return
 
-    # Verify presence of 'all_dive_summaries.csv' where the module writes it
+    # Require 'all_dive_summaries.csv' for downstream steps
     summary_file = processed_dir / "all_dive_summaries.csv"
     logging.debug(f"Checking for existence of summary file: {summary_file}")
     if not summary_file.exists():
-        if dive_summaries_proceed == "no":
-            print(f"\nError: {summary_file} does not exist, and dive summaries were skipped.")
-            print("Cannot continue with .DAT processing because the summary file is missing.")
-            logging.debug("Aborting further processing due to missing dive summaries file (skipped).")
-            return
-        else:
-            print(f"\nError: {summary_file} was not created after processing dive summaries.")
-            print("Cannot continue with .DAT processing.")
-            logging.debug("Aborting further processing due to missing dive summaries file (processing attempted).")
-            return
+        print(f"\nError: {summary_file} was not created. Cannot continue with .DAT processing.")
+        logging.debug("Aborting: missing dive summaries output.")
+        return
     else:
-        print(f"\nDive summaries are present at: {summary_file}")
+        print(f"\nDive summaries present: {summary_file}")
         logging.debug("Verified existence of dive summaries file.")
 
     # 3) Combined .DAT
     print("\n[ Step 2 ]: Combined .DAT Processing (OCT + VFR)")
-    process_script(process_dat, root_dir)
+    if not run_step(process_dat, root_dir):
+        return
 
     # 4) USBL
     print("\n[ Step 3 ]: USBL Lat/Long Uncertainty")
-    process_script(sdyn_usbl, root_dir)
+    if not run_step(sdyn_usbl, root_dir):
+        return
 
     # 5) Sealog
     print("\n[ Step 4 ]: Sealog Sensor Data")
-    process_script(sensors_sealog, root_dir)
+    if not run_step(sensors_sealog, root_dir):
+        return
 
     # 6) StillCam conversion
     print("\n[ Step 5 ]: Convert StillCam PNGs to JPGs")
-    process_script(stillcam_images, root_dir)
+    if not run_step(stillcam_images, root_dir):
+        return
 
     print("\n--------------------------------------------------")
-    print("All selected processes completed.")
-    print(f"Check '{processed_dir}' for output files.")
+    print("All processes completed.")
+    print(f"Outputs in: '{processed_dir}'")
     print("--------------------------------------------------")
     logging.debug("Exiting main()")
 
