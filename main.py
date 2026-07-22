@@ -58,28 +58,53 @@ def get_directories(cli_dir=None):
     return root_dir, processed_dir
 
 
-def run_step(script_module, root_dir) -> bool:
+# Restart support: how to tell whether a step already produced its outputs.
+# Each entry maps a step name to a glob (relative to <root>/RUMI_processed)
+# that matches at least one of its output files.
+STEP_OUTPUT_GLOBS = {
+    "dive_summaries": "all_dive_summaries.csv",
+    "process_dat": "*/[!.]*_pitch_roll_heading_octans.csv",
+    "usbl_sdyn": "*/[!.]*_USBL_Hercules.csv",
+    "sensors_sealog": "*/[!.]*_sealog_sensors_merged.csv",
+    # stillcam_images resumes per image internally -- always run it.
+}
+
+
+def step_outputs_exist(name, root_dir):
+    pattern = STEP_OUTPUT_GLOBS.get(name)
+    if pattern is None:
+        return False
+    return any((Path(root_dir) / "RUMI_processed").glob(pattern))
+
+
+def run_step(script_module, root_dir, force=False) -> str:
     """
-    Non-interactive: run script_module.process_data(root_dir).
-    Returns True on success, False on any exception (after logging).
+    Run script_module.process_data(root_dir).
+    Returns 'ok', 'skipped', or 'failed'.
     """
     name = script_module.__name__.split('.')[-1]
+    if not force and step_outputs_exist(name, root_dir):
+        print(f"\n[resume] {name}: outputs already present -- skipping "
+              f"(rerun with --force to regenerate).")
+        return "skipped"
     logging.debug(f"Starting {name}")
     print(f"\nProcessing {name}...")
     try:
         script_module.process_data(root_dir)
         print(f"Finished {name}.")
         logging.debug(f"Finished {name}")
-        return True
+        return "ok"
     except Exception as e:
         logging.exception(f"{name} failed")
         print(f"\nERROR in {name}: {e}\nAborting subsequent steps.")
-        return False
+        return "failed"
 
 
 def main():
     parser = argparse.ArgumentParser(description="ROV raw data extraction pipeline (stage 1)")
     parser.add_argument("--dir", help="Raw data root directory (skips the interactive prompt)")
+    parser.add_argument("--force", action="store_true",
+                        help="Rerun every step even if its outputs already exist")
     args = parser.parse_args()
 
     logging.debug("Starting main()")
@@ -91,45 +116,43 @@ def main():
     root_dir, processed_dir = get_directories(args.dir)
     logging.debug(f"Directories set. Root: {root_dir}, Processed: {processed_dir}")
 
-    # 2) Dive summaries
-    print("\n[ Step 1 ]: Dive Summaries")
-    if not run_step(dive_summaries, root_dir):
-        return
+    steps = [
+        ("Dive Summaries", dive_summaries),
+        ("Combined .DAT Processing (OCT + VFR)", process_dat),
+        ("USBL Lat/Long Uncertainty", sdyn_usbl),
+        ("Sealog Sensor Data", sensors_sealog),
+        ("Convert StillCam PNGs to JPGs", stillcam_images),
+    ]
 
-    # Require 'all_dive_summaries.csv' for downstream steps
-    summary_file = processed_dir / "all_dive_summaries.csv"
-    logging.debug(f"Checking for existence of summary file: {summary_file}")
-    if not summary_file.exists():
-        print(f"\nError: {summary_file} was not created. Cannot continue with .DAT processing.")
-        logging.debug("Aborting: missing dive summaries output.")
-        return
-    else:
-        print(f"\nDive summaries present: {summary_file}")
-        logging.debug("Verified existence of dive summaries file.")
+    statuses = {}
+    for idx, (title, module) in enumerate(steps, start=1):
+        print(f"\n[ Step {idx} ]: {title}")
+        status = run_step(module, root_dir, force=args.force)
+        statuses[module.__name__.split('.')[-1]] = status
+        if status == "failed":
+            break
 
-    # 3) Combined .DAT
-    print("\n[ Step 2 ]: Combined .DAT Processing (OCT + VFR)")
-    if not run_step(process_dat, root_dir):
-        return
-
-    # 4) USBL
-    print("\n[ Step 3 ]: USBL Lat/Long Uncertainty")
-    if not run_step(sdyn_usbl, root_dir):
-        return
-
-    # 5) Sealog
-    print("\n[ Step 4 ]: Sealog Sensor Data")
-    if not run_step(sensors_sealog, root_dir):
-        return
-
-    # 6) StillCam conversion
-    print("\n[ Step 5 ]: Convert StillCam PNGs to JPGs")
-    if not run_step(stillcam_images, root_dir):
-        return
+        # Downstream steps need the dive summaries file regardless of whether
+        # the step ran or was skipped on resume.
+        if module is dive_summaries:
+            summary_file = processed_dir / "all_dive_summaries.csv"
+            if not summary_file.exists():
+                print(f"\nError: {summary_file} was not created. "
+                      f"Cannot continue with .DAT processing.")
+                statuses[module.__name__.split('.')[-1]] = "failed"
+                break
+            print(f"\nDive summaries present: {summary_file}")
 
     print("\n--------------------------------------------------")
-    print("All processes completed.")
-    print(f"Outputs in: '{processed_dir}'")
+    print("Run summary:")
+    for name, status in statuses.items():
+        marker = {"ok": "done", "skipped": "skipped (resume)", "failed": "FAILED"}[status]
+        print(f"  {name:20s} {marker}")
+    if any(s == "failed" for s in statuses.values()):
+        print("Pipeline aborted at the failed step. Fix the issue and rerun --")
+        print("completed steps will be skipped automatically (use --force to redo).")
+    else:
+        print(f"Outputs in: '{processed_dir}'")
     print("--------------------------------------------------")
     logging.debug("Exiting main()")
 

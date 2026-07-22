@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import timedelta
 
 from processors.common import to_iso8601
+from processors.report import RunReport
 
 MIN_DIVE_HOURS = 2
 
@@ -104,15 +105,28 @@ def concatenate_dive_summaries(root_dir):
     if not dive_reports_path.exists():
         raise FileNotFoundError(f"Dive reports directory not found at {dive_reports_path}")
 
+    report = RunReport("dive_summaries", root_dir / "RUMI_processed")
+
     combined_dfs = []
+    skipped = []
     for item in sorted(dive_reports_path.iterdir()):
         if item.is_dir() and item.name.upper().startswith("H"):
             df = process_dive_folder(item, item.name.upper())
             if df is not None:
                 combined_dfs.append(df)
+            else:
+                skipped.append(item.name.upper())
+
+    report.metric("dives_included", len(combined_dfs))
+    if skipped:
+        report.warn("dives-skipped",
+                    f"{len(skipped)} dive folders skipped (missing files, short dive, "
+                    f"or bad timestamps): {', '.join(skipped)}")
 
     if not combined_dfs:
         print("No dive summaries were processed.")
+        report.error("no-data", "no dive summaries could be processed")
+        report.finalize()
         return
 
     all_dive_df = pd.concat(combined_dfs, ignore_index=True)
@@ -133,6 +147,8 @@ def concatenate_dive_summaries(root_dir):
     all_dive_df.to_csv(summary_csv, index=False, quoting=csv.QUOTE_ALL)
 
     print(f"\nCombined dive summaries saved to: {summary_csv}")
+    report.add_output(summary_csv, rows=len(all_dive_df))
+    report.finalize()
 
 
 def process_data(root_dir):

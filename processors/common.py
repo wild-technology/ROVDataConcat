@@ -95,6 +95,29 @@ def best_fix_per_second(df: pd.DataFrame, quality_col: str = None):
     return out, orig, len(out)
 
 
+def find_time_gaps(ts_series, max_gap_s=60):
+    """
+    Find gaps larger than max_gap_s seconds in a timestamp series.
+
+    Returns a list of (gap_start_iso, gap_end_iso, gap_seconds), largest first.
+    """
+    ts = pd.to_datetime(ts_series, utc=True, errors="coerce").dropna().sort_values()
+    if len(ts) < 2:
+        return []
+    diffs = ts.diff().dt.total_seconds()
+    gaps = []
+    for pos in range(1, len(ts)):
+        g = diffs.iloc[pos]
+        if g > max_gap_s:
+            gaps.append((
+                ts.iloc[pos - 1].strftime(ISO_FMT),
+                ts.iloc[pos].strftime(ISO_FMT),
+                float(g),
+            ))
+    gaps.sort(key=lambda x: -x[2])
+    return gaps
+
+
 def determine_utm_zone(lon, lat):
     """Determine the UTM zone (number, hemisphere) for a lon/lat coordinate."""
     zone_number = int((lon + 180) / 6) + 1

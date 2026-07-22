@@ -4,6 +4,8 @@ import pandas as pd
 from PIL import Image
 from datetime import datetime
 
+from processors.report import RunReport
+
 def process_data(root_dir):
     """
     Processes merged Sealog CSV files to locate camera image filenames,
@@ -45,6 +47,7 @@ def process_data(root_dir):
     total_missing_pngs = 0
     total_parse_errors = 0
     total_converted = 0
+    total_already_done = 0
 
     # Iterate over each dive folder in RUMI_processed
     for dive_path in rumi_processed_dir.iterdir():
@@ -106,13 +109,17 @@ def process_data(root_dir):
                     print(f"  Source PNG not found: {source_png_path}")
                     continue
 
+                # Resume support: skip images already converted in a prior run.
+                jpg_name = png_path_obj.stem + ".jpg"
+                jpg_path = stillcam_dir / jpg_name
+                if jpg_path.exists():
+                    total_already_done += 1
+                    continue
+
                 # Convert the PNG to 1280x720 JPEG (80% quality)
                 try:
                     with Image.open(source_png_path) as img:
                         img = img.resize((1280, 720), Image.Resampling.LANCZOS)
-                        # Build the output filename (change .png to .jpg)
-                        jpg_name = png_path_obj.stem + ".jpg"
-                        jpg_path = stillcam_dir / jpg_name
                         img.save(jpg_path, "JPEG", quality=80)
                         total_converted += 1
                         print(f"  Saved resized image: {jpg_path}")
@@ -127,5 +134,18 @@ def process_data(root_dir):
     print(f"  Total PNG references:      {total_png_references}")
     print(f"  Missing PNG files:         {total_missing_pngs}")
     print(f"  Parse/Conversion errors:   {total_parse_errors}")
+    print(f"  Already converted (skip):  {total_already_done}")
     print(f"  Successfully converted:    {total_converted}")
     print("------------------------------------------------------\n")
+
+    report = RunReport("stillcam_images", rumi_processed_dir)
+    report.metric("png_references", total_png_references)
+    report.metric("converted", total_converted)
+    report.metric("skipped_already_done", total_already_done)
+    if total_missing_pngs:
+        report.warn("missing-source",
+                    f"{total_missing_pngs} referenced PNGs not found under processed/capture_pngs")
+    if total_parse_errors:
+        report.warn("conversion-errors",
+                    f"{total_parse_errors} filenames failed to parse or convert")
+    report.finalize()

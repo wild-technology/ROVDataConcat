@@ -24,6 +24,7 @@ from pyproj import Proj
 from scipy.ndimage import gaussian_filter1d
 
 from processors.common import expedition_dive_from_processed_dir, determine_utm_zone, utm_proj_string
+from processors.report import RunReport
 
 
 def deg2rad(deg):
@@ -166,6 +167,9 @@ def process_data(raw_dir, processed_dir):
         if df.empty:
             raise ValueError(f"{input_file.name} contains no data rows.")
 
+        report = RunReport("kalman_filter", processed_dir)
+        report.add_input(input_file, rows=len(df))
+
         # Filter rows with depth <= -20 m. Note this also drops rows with no
         # depth reading (NaN fails the comparison) -- report both counts.
         original_count = len(df)
@@ -173,6 +177,15 @@ def process_data(raw_dir, processed_dir):
         df = df[df["Herc_Depth_1"] <= -20]
         print(f"Filtered to {len(df)} rows where depth <= -20m "
               f"(removed {original_count - len(df)} rows, of which {nan_depth} had no depth reading)")
+        report.metric("rows_dropped_shallow_or_no_depth", original_count - len(df))
+        if nan_depth:
+            report.warn("missing-depth",
+                        f"{nan_depth} rows had no depth reading and were dropped "
+                        f"by the depth <= -20m filter")
+        if df.empty:
+            report.error("empty-after-filter", "no rows deeper than -20m; nothing to filter")
+            report.finalize()
+            raise ValueError("No rows deeper than -20m; cannot run the Kalman filter.")
 
         # Remove duplicate timestamps BEFORE Kalman filter processing.
         # Prefer rows that carry a sealog event (consistent with kalman_concat),
@@ -198,6 +211,13 @@ def process_data(raw_dir, processed_dir):
         utm_proj = usbl_proj if usbl_success > 0 else (dvl_proj if dvl_success > 0 else None)
         if usbl_success == 0 and dvl_success == 0:
             print("WARNING: No coordinates could be converted to UTM. Check lat/long data.")
+            report.anomaly("no-position-data",
+                           "no USBL or DVL coordinates could be converted to UTM; "
+                           "output positions will be dead-reckoned from the initial state only")
+        elif usbl_success == 0:
+            report.warn("no-usbl", "no USBL fixes in the dive window; using DVL only")
+        elif dvl_success == 0:
+            report.warn("no-dvl", "no DVL fixes in the dive window; using USBL only")
 
         # Convert orientation to radians.
         df["Heading_rad"] = df["Heading"].apply(deg2rad)
@@ -268,6 +288,11 @@ def process_data(raw_dir, processed_dir):
 
         print("Starting Kalman filter processing...")
         updates_applied = 0
+        usbl_rejected = 0
+        dvl_updates = 0
+
+        # Per-step history for the RTS smoother (forward-backward pass).
+        xs_hist, Ps_hist, Fs_hist = [], [], []
 
         def scalar_update(value, state_index, variance):
             """Apply a 1-D measurement update on a single state component."""
@@ -316,6 +341,8 @@ def process_data(raw_dir, processed_dir):
                     scalar_update(row["x_usbl"], 0, usbl_var)
                     scalar_update(row["y_usbl"], 1, usbl_var)
                     updates_applied += 2
+                else:
+                    usbl_rejected += 1
 
             # DVL update only at depth (<= -30 m), i.e. where the DVL has bottom
             # lock and its dead-reckoning solution is trustworthy.
@@ -327,6 +354,7 @@ def process_data(raw_dir, processed_dir):
                     scalar_update(row["x_dvl"], 0, 3.0 ** 2)
                     scalar_update(row["y_dvl"], 1, 3.0 ** 2)
                     updates_applied += 2
+                    dvl_updates += 1
 
             # Orientation updates.
             if not np.isnan(row.get("Roll_rad", np.nan)):
@@ -341,22 +369,36 @@ def process_data(raw_dir, processed_dir):
             kf.x[3] = wrap_angle(kf.x[3])
             kf.x[4] = wrap_angle(kf.x[4])
 
-            # Save filtered state.
-            x_est, y_est, z_est, r_est, p_est, vx_est, vy_est, vz_est = kf.x
-            df.at[i, "kalman_x"] = x_est
-            df.at[i, "kalman_y"] = y_est
-            if utm_proj is not None:
-                try:
-                    lon_est, lat_est = utm_proj(x_est, y_est, inverse=True)
-                    df.at[i, "kalman_lat"] = lat_est
-                    df.at[i, "kalman_long"] = lon_est
-                except Exception as e:
-                    print(f"Error converting UTM back to lat/long for ({x_est}, {y_est}): {e}")
-            df.at[i, "kalman_depth"] = z_est
-            df.at[i, "kalman_roll_deg"] = np.degrees(r_est)
-            df.at[i, "kalman_pitch_deg"] = np.degrees(p_est)
+            # Record post-update state for the backward smoothing pass.
+            xs_hist.append(kf.x.copy())
+            Ps_hist.append(kf.P.copy())
+            Fs_hist.append(F)
 
         print(f"Kalman filter processing complete. Applied {updates_applied} updates.")
+        if usbl_rejected:
+            print(f"USBL outlier gate rejected {usbl_rejected} fixes.")
+
+        # RTS (Rauch-Tung-Striebel) smoother: a backward pass that removes the
+        # causal filter's lag by conditioning every state on the whole dive.
+        Xs = np.array(xs_hist)
+        if len(Xs) >= 2:
+            print("Running RTS smoother (backward pass)...")
+            Xs_smooth, _, _, _ = kf.rts_smoother(
+                Xs, np.array(Ps_hist), Fs=Fs_hist, Qs=[kf.Q] * len(Xs)
+            )
+        else:
+            Xs_smooth = Xs
+
+        # Write smoothed states back (df is in the same order the loop ran).
+        df["kalman_x"] = Xs_smooth[:, 0]
+        df["kalman_y"] = Xs_smooth[:, 1]
+        df["kalman_depth"] = Xs_smooth[:, 2]
+        df["kalman_roll_deg"] = np.degrees(wrap_angle(Xs_smooth[:, 3]))
+        df["kalman_pitch_deg"] = np.degrees(wrap_angle(Xs_smooth[:, 4]))
+        if utm_proj is not None:
+            lons, lats = utm_proj(Xs_smooth[:, 0], Xs_smooth[:, 1], inverse=True)
+            df["kalman_lat"] = lats
+            df["kalman_long"] = lons
 
         # Convert Timestamp back to ISO8601.
         df["Timestamp"] = pd.to_datetime(df["Timestamp"], utc=True).apply(
@@ -397,6 +439,23 @@ def process_data(raw_dir, processed_dir):
         final_output_file = processed_dir / f"{expedition}_{dive}_final_datatable.csv"
         final_df.to_csv(final_output_file, index=False, quoting=csv.QUOTE_ALL)
         print(f"Saved final datatable to {final_output_file}")
+
+        report.metric("rows_out", len(df))
+        report.metric("measurement_updates", updates_applied)
+        report.metric("dvl_position_updates", dvl_updates)
+        report.metric("usbl_fixes_gated_out", usbl_rejected)
+        report.metric("rts_smoother", "applied" if len(Xs) >= 2 else "skipped (too few rows)")
+        if dvl_updates == 0 and dvl_success > 0:
+            report.anomaly("dvl-unused",
+                           f"{dvl_success} DVL fixes were available but none passed the "
+                           f"depth <= -30m gate -- check the depth channel")
+        if usbl_rejected > max(50, 0.10 * max(usbl_success, 1)):
+            report.warn("usbl-gate",
+                        f"outlier gate rejected {usbl_rejected} of {usbl_success} USBL fixes "
+                        f"(unusually high; USBL may be noisy this dive)")
+        report.add_output(output_file, rows=len(df))
+        report.add_output(final_output_file, rows=len(final_df))
+        report.finalize()
 
         print("Processing complete. All UTM and Kalman-filtered data included in output.")
     except Exception as e:

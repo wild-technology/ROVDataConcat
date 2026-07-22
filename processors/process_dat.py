@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 
 from processors.common import best_fix_per_second, drop_duplicate_timestamps
+from processors.report import RunReport
 
 # ------------------------------------------------------------------------------
 # Function: split_lat_long
@@ -353,10 +354,16 @@ def process_data(root_dir):
         print(f"Error reading dive summaries: {e}")
         return
 
+    report = RunReport("process_dat", root_dir / "RUMI_processed")
+
     print("\nReading all .DAT files once to capture both OCT and VFR data...")
     all_oct, all_vfr = process_all_dat_files_both(root_dir)
+    report.metric("oct_records_parsed", len(all_oct))
+    report.metric("vfr_records_parsed", len(all_vfr))
     if all_oct.empty and all_vfr.empty:
         print("No OCT or VFR data found in any .DAT file.")
+        report.error("no-data", "no OCT or VFR records found in any .DAT file")
+        report.finalize()
         return
 
     print("\n=== Processing Dives ===")
@@ -381,8 +388,13 @@ def process_data(root_dir):
             print(f"  - After Rounding: {final_oct}")
             print(f"  - Duplicates Removed: {dup_oct}")
             print(f"  - Coverage: {coverage_oct:.2f}%")
+            if coverage_oct < 90:
+                report.anomaly("low-coverage",
+                               f"dive {dive_id}: OCT coverage only {coverage_oct:.1f}% "
+                               f"of the dive window")
         else:
             print(f"WARNING: Dive {dive_id}: No OCT data within the defined window.")
+            report.warn("no-data", f"dive {dive_id}: no OCT data in the dive window")
 
         df_vfr, orig_vfr, final_vfr, dup_vfr, exp_vfr = process_dive_vehicle_rows_latlong(row, all_vfr)
         total_vfr_expected += exp_vfr
@@ -396,13 +408,22 @@ def process_data(root_dir):
             print(f"  - After Rounding: {final_vfr}")
             print(f"  - Duplicates Removed: {dup_vfr}")
             print(f"  - Coverage: {coverage_vfr:.2f}%")
+            if coverage_vfr < 90:
+                report.anomaly("low-coverage",
+                               f"dive {dive_id}: DVL coverage only {coverage_vfr:.1f}% "
+                               f"of the on-bottom window")
         else:
             print(f"WARNING: Dive {dive_id}: No VFR data within the On Bottom/Off Bottom window.")
+            report.warn("no-data", f"dive {dive_id}: no DVL data in the on-bottom window")
 
     print("\n=== Processing Complete! ===")
     print(f"* OCT total expected: {total_oct_expected} seconds, total fixes: {total_oct_fixes}")
     print(f"* VFR total expected: {total_vfr_expected} seconds, total fixes: {total_vfr_fixes}")
     print(f"Data stored in {root_dir / 'RUMI_processed'}")
+
+    report.metric("oct_fixes_written", total_oct_fixes)
+    report.metric("vfr_fixes_written", total_vfr_fixes)
+    report.finalize()
 
 # ------------------------------------------------------------------------------
 # End of Script

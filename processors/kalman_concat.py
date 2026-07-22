@@ -1,8 +1,10 @@
 from pathlib import Path
+import numpy as np
 import pandas as pd
 import csv
 
-from processors.common import expedition_dive_from_processed_dir
+from processors.common import expedition_dive_from_processed_dir, find_time_gaps
+from processors.report import RunReport
 
 
 def remove_duplicate_timestamps_prioritizing_event(df):
@@ -78,12 +80,23 @@ def process_data(raw_dir, processed_dir):
         return pd.read_csv(path, parse_dates=["Timestamp"], low_memory=False,
                            quotechar='"').sort_values("Timestamp")
 
+    report = RunReport("kalman_concat", processed_dir)
+
     # Octans (heading/pitch/roll) and the merged sensor file are essential;
     # USBL and DVL can legitimately be absent for a dive.
     octans_df = read_nav_csv(octans_file, "Octans", required=True)
     depth_df = read_nav_csv(depth_file, "Sealog/sensor merge", required=True)
     usbl_df = read_nav_csv(usbl_file, "USBL")
     dvl_df = read_nav_csv(dvl_file, "DVL")
+
+    for label, frame, path in (("octans", octans_df, octans_file),
+                               ("sensors", depth_df, depth_file),
+                               ("usbl", usbl_df, usbl_file),
+                               ("dvl", dvl_df, dvl_file)):
+        if frame is not None:
+            report.add_input(path, rows=len(frame))
+        else:
+            report.warn("missing-input", f"{label} file absent: {path.name}")
 
     # Rename columns for clarity
     if usbl_df is not None:
@@ -135,11 +148,22 @@ def process_data(raw_dir, processed_dir):
             print(f"Roll ({roll_col}): mean = {roll_mean:.4f}, std = {roll_std:.4f}, outliers = {roll_outlier_count}")
             outlier_mask |= roll_outliers
 
-        total_outliers = outlier_mask.sum()
-        print(f"Filtering out a total of {total_outliers} outlier rows based on statistical assessment for pitch/roll.")
-        merged_df = merged_df[~outlier_mask]
+        total_outliers = int(outlier_mask.sum())
+        # Null only the offending pitch/roll values -- do NOT drop the rows.
+        # A pitch spike must not discard the row's USBL fix, sensor sample, or
+        # sealog annotation (the previous behavior removed the whole row).
+        if pitch_col:
+            merged_df.loc[pitch_outliers, pitch_col] = np.nan
+        if roll_col:
+            merged_df.loc[roll_outliers, roll_col] = np.nan
+        print(f"Nulled pitch/roll on {total_outliers} outlier rows (rows retained).")
+        if total_outliers:
+            report.warn("orientation-outliers",
+                        f"{int(pitch_outlier_count)} pitch / {int(roll_outlier_count)} roll "
+                        f"values beyond 3 sigma were nulled ({total_outliers} rows affected, kept)")
     else:
         print("No pitch/roll columns found for filtering.")
+        report.warn("missing-columns", "no pitch/roll columns found in merged data")
 
     print(f"Merged dataframe shape after filtering: {merged_df.shape}")
 
@@ -156,6 +180,18 @@ def process_data(raw_dir, processed_dir):
     else:
         print("No duplicate timestamps found.")
 
+    if total_removed:
+        report.warn("duplicate-timestamps",
+                    f"{total_removed} duplicate-timestamp rows removed "
+                    f"(kept rows with sealog events)")
+
+    # Surface large holes in the merged timeline.
+    gaps = find_time_gaps(merged_df["Timestamp"], max_gap_s=60)
+    if gaps:
+        top = ", ".join(f"{g[2]:.0f}s after {g[0]}" for g in gaps[:3])
+        report.anomaly("time-gaps",
+                       f"{len(gaps)} gaps > 60s in merged timeline (largest: {top})")
+
     # Convert Timestamp to ISO8601 with seconds only
     merged_df["Timestamp"] = merged_df["Timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -165,3 +201,7 @@ def process_data(raw_dir, processed_dir):
     # Export to CSV with quoting enabled
     merged_df.to_csv(output_file, index=False, quoting=csv.QUOTE_ALL)
     print(f"Kalman merged data saved to: {output_file}")
+
+    report.metric("rows_out", len(merged_df))
+    report.add_output(output_file, rows=len(merged_df))
+    report.finalize()

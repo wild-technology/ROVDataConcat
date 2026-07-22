@@ -28,8 +28,8 @@ python main.py --dir Z:/NA173
 
 | Step | Module | Purpose |
 |------|--------|---------|
-| 1 | `processors/kalman_concat.py` | Outer-merge octans + USBL + DVL + sensors on Timestamp; 3σ pitch/roll outlier cull → `<EXP>_<DIVE>_filtered_datatable.csv` |
-| 2 | `processors/kalman_filter.py` | 8-state Kalman filter (x, y, z, roll, pitch, vx, vy, vz) + circular heading smoother → `<EXP>_<DIVE>_kalman_filtered_data.csv`, `<EXP>_<DIVE>_final_datatable.csv` |
+| 1 | `processors/kalman_concat.py` | Outer-merge octans + USBL + DVL + sensors on Timestamp; 3σ pitch/roll outliers nulled (rows kept) → `<EXP>_<DIVE>_filtered_datatable.csv` |
+| 2 | `processors/kalman_filter.py` | 8-state Kalman filter (x, y, z, roll, pitch, vx, vy, vz) + RTS smoother (forward-backward) + circular heading smoother → `<EXP>_<DIVE>_kalman_filtered_data.csv`, `<EXP>_<DIVE>_final_datatable.csv` |
 | 3 | `processors/kalman_assess.py` | Smoothness/consistency metrics + plots → `<EXP>_<DIVE>_kalman_assessment.csv` |
 | 4 | `processors/kalman_offset.py` | Offset position 2 m backwards along heading, enforce ≥1 m terrain clearance against dive GeoTIFF → `<EXP>_<DIVE>_filtered_offset_final.csv` |
 
@@ -38,6 +38,18 @@ python main_kalman.py --base Z:/ --expedition NA173 --dive H2075 --yes
 ```
 
 (Omit the flags to be prompted interactively.)
+
+**Restart / resume:** both orchestrators detect outputs produced by earlier
+runs and skip completed steps automatically; add `--force` to regenerate.
+Stillcam image conversion resumes per image. After a failure, fix the issue
+and simply rerun -- completed work is not redone.
+
+**Data quality reports:** every stage prints a `Data Quality Report` block at
+the end of its run listing all anomalies found (missing inputs, time gaps,
+low coverage, nulled outliers, off-raster positions, rejected fixes...) and
+writes a JSON provenance sidecar under `RUMI_processed/reports/` (stage 1)
+or `RUMI_processed/<DIVE>/reports/` (stage 2) recording the pipeline git
+commit, inputs, outputs, row counts, and every event.
 
 ## Directory conventions
 

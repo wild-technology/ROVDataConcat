@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 from pyproj import CRS, Proj, Transformer
 
 from processors.common import expedition_dive_from_processed_dir, utm_proj_string
+from processors.report import RunReport
 
 # Vehicle position is shifted this many meters backwards along the heading.
 OFFSET_M = 2.0
@@ -89,6 +90,10 @@ def process_data(raw_dir, processed_dir):
 
     df = pd.read_csv(csv_path, low_memory=False)
 
+    report = RunReport("kalman_offset", processed_dir)
+    report.add_input(csv_path, rows=len(df))
+    report.add_input(geotiff_path)
+
     # Define required columns.
     x_col, y_col, depth_col = 'kalman_x', 'kalman_y', 'kalman_depth'
     heading_rad_col = 'Heading_rad'  # Raw OCTANS heading in radians (compass convention)
@@ -113,6 +118,9 @@ def process_data(raw_dir, processed_dir):
         if n_fb:
             print(f"Note: {n_fb} rows have no OCTANS heading; using smoothed kalman yaw "
                   f"for their offset direction.")
+            report.warn("heading-fallback",
+                        f"{n_fb} rows used smoothed kalman yaw for the offset direction "
+                        f"(no OCTANS heading)")
         offset_heading = offset_heading.fillna(fallback)
     dx = (OFFSET_M * np.sin(offset_heading)).fillna(0.0)
     dy = (OFFSET_M * np.cos(offset_heading)).fillna(0.0)
@@ -170,6 +178,11 @@ def process_data(raw_dir, processed_dir):
         if n_nodata:
             print(f"Note: {n_nodata} of {len(sampled)} positions are off-raster or "
                   f"nodata; their depths are left unadjusted.")
+            frac = n_nodata / len(sampled)
+            sev = report.anomaly if frac > 0.05 else report.warn
+            sev("off-raster",
+                f"{n_nodata} of {len(sampled)} positions ({frac:.1%}) fall outside the "
+                f"GeoTIFF or on nodata; no terrain clearance applied there")
         df['below_surface'] = df[depth_col] < df['geotiff_value'] + MIN_CLEARANCE_M
         df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + MIN_CLEARANCE_M
 
@@ -214,9 +227,14 @@ def process_data(raw_dir, processed_dir):
     # Compute depth difference: (adjusted Depth) - (center pixel value).
     df['depth_diff'] = df[depth_col] - df['geotiff_value']
     total_rows = len(df)
-    num_below = ((df[depth_col] - df['geotiff_value']) < MIN_CLEARANCE_M).sum()
+    num_below = int(((df[depth_col] - df['geotiff_value']) < MIN_CLEARANCE_M).sum())
     print(f"Depth Summary: {num_below} out of {total_rows} depth values are "
           f"< {MIN_CLEARANCE_M}m above terrain (should be 0).")
+    if num_below:
+        report.anomaly("terrain-clearance",
+                       f"{num_below} of {total_rows} depths remain < {MIN_CLEARANCE_M}m "
+                       f"above terrain after adjustment (should be 0)")
+    report.metric("depths_adjusted_for_clearance", int(df['below_surface'].sum()))
 
     # Create a scatter plot of offset positions (NaN depth_diff = off-raster,
     # excluded from both groups).
@@ -314,6 +332,10 @@ def process_data(raw_dir, processed_dir):
     # Save final CSV with all fields quoted.
     df.to_csv(output_file, index=False, quotechar='"', quoting=csv.QUOTE_ALL)
     print(f"UTM assessment results saved to: {output_file}")
+
+    report.metric("rows_out", len(df))
+    report.add_output(output_file, rows=len(df))
+    report.finalize()
 
 if __name__ == "__main__":
     raw_dir = input("Enter the raw directory for processing: ").strip()

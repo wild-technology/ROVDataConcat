@@ -3,6 +3,7 @@ import pandas as pd
 import csv
 
 from processors.common import drop_duplicate_timestamps
+from processors.report import RunReport
 
 # ------------------------------------------------------------------------------
 # Function: get_file_paths
@@ -211,7 +212,7 @@ def remove_timestamp_duplicates(df):
 # ------------------------------------------------------------------------------
 # Function: process_single_dive
 # ------------------------------------------------------------------------------
-def process_single_dive(root_dir, expedition, dive_number):
+def process_single_dive(root_dir, expedition, dive_number, report=None):
     """
     Processes a single dive by merging various sensor datasets and saving the merged output.
 
@@ -246,6 +247,9 @@ def process_single_dive(root_dir, expedition, dive_number):
     ctd_df = load_tsv_file(paths["ctd"], sensor_name="CTD", column_names=ctd_columns)
     if ctd_df is None:
         print(f"Skipping {dive_number} due to missing CTD data.")
+        if report:
+            report.warn("missing-input",
+                        f"dive {dive_number}: CTD file missing ({paths['ctd'].name}); dive skipped")
         return
 
     initial_rows = len(ctd_df)
@@ -284,6 +288,17 @@ def process_single_dive(root_dir, expedition, dive_number):
     herc_output_path = dive_output_dir / f"{expedition}_{dive_number}_sealog_sensors_merged.csv"
     herc_merged.to_csv(herc_output_path, index=False, quoting=csv.QUOTE_ALL)
     print(f"Saved Hercules merged sensor data: {herc_output_path}")
+    if report:
+        report.add_output(herc_output_path, rows=len(herc_merged))
+        if sealog_df is None:
+            report.warn("missing-input",
+                        f"dive {dive_number}: sealog export missing; merged file has no events")
+        if herc_df is None:
+            report.warn("missing-input",
+                        f"dive {dive_number}: DEP1 depth file missing; merged file has no "
+                        f"Herc_Depth_1 (the Kalman stage requires it)")
+        if o2s_df is None:
+            report.info("missing-input", f"dive {dive_number}: O2S file missing")
 
     # ---------------------------------------------------------
     # Load & Save ONLY raw Atalanta (DEP2) columns as-is
@@ -360,9 +375,11 @@ def process_data(root_dir):
         print(f"Error loading dive summaries: {e}")
         return
 
+    report = RunReport("sensors_sealog", root_dir / "RUMI_processed")
     for dive_num in dive_list:
         print(f"Processing dive {dive_num}...")
-        process_single_dive(root_dir, expedition, dive_num)
+        process_single_dive(root_dir, expedition, dive_num, report=report)
+    report.finalize()
 
 # ------------------------------------------------------------------------------
 # Main Execution Block

@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 from processors.common import best_fix_per_second, drop_duplicate_timestamps
+from processors.report import RunReport
 
 def parse_sdyn_file(filepath):
     """
@@ -220,8 +221,13 @@ def process_data(root_directory):
         print(f"Error processing SDYN files: {e}")
         return
 
+    report = RunReport("usbl_sdyn", processed_dir)
+    report.metric("raw_fixes_parsed", len(sdyn_data))
+
     if sdyn_data.empty:
         print("No USBL fixes found.")
+        report.error("no-data", "no USBL fixes parsed from any SDYN file")
+        report.finalize()
         return
 
     # Process each dive and save output files
@@ -245,7 +251,12 @@ def process_data(root_directory):
                 try:
                     df_final.to_csv(outpath, index=False)
                     print(f"Saved processed data for dive {dive_id}, vehicle {vehicle} to: {outpath}")
+                    report.add_output(outpath, rows=len(df_final))
                 except Exception as e:
                     print(f"Error saving file {outpath}: {e}")
+                    report.error("write-failed", f"could not write {outpath}: {e}")
         else:
             print(f"No valid data to process for dive {dive_id}.")
+            report.warn("no-data", f"dive {dive_id}: no USBL fixes in the dive window")
+
+    report.finalize()

@@ -278,3 +278,32 @@ class TestDiveSummaries:
         folder = tmp_path / "H9999"
         folder.mkdir()
         assert process_dive_folder(folder, "H9999") is None
+
+
+# ---------------------------------------------------------------------------
+# Resume / restart support
+# ---------------------------------------------------------------------------
+
+class TestResume:
+    def test_kalman_module_output_paths(self):
+        from main_kalman import module_output_path
+        processed = Path("Z:/NA167/RUMI_processed/H2075")
+        p = module_output_path("kalman_concat", processed)
+        assert p.name == "NA167_H2075_filtered_datatable.csv"
+        p = module_output_path("kalman_offset", processed)
+        assert p.name == "NA167_H2075_filtered_offset_final.csv"
+        assert module_output_path("unknown_module", processed) is None
+
+    def test_stage1_output_detection(self, tmp_path):
+        from main import step_outputs_exist
+        root = tmp_path
+        (root / "RUMI_processed" / "H2075").mkdir(parents=True)
+        assert not step_outputs_exist("process_dat", root)
+        (root / "RUMI_processed" / "H2075" /
+         "NA167_H2075_pitch_roll_heading_octans.csv").write_text("Timestamp\n")
+        assert step_outputs_exist("process_dat", root)
+        assert not step_outputs_exist("dive_summaries", root)
+        (root / "RUMI_processed" / "all_dive_summaries.csv").write_text("x\n")
+        assert step_outputs_exist("dive_summaries", root)
+        # stillcam has per-image resume, never step-level skip
+        assert not step_outputs_exist("stillcam_images", root)

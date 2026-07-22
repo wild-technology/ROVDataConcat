@@ -60,41 +60,70 @@ def get_directories(args):
     print(f"  * Processed directory:      {processed_dir}")
     return raw_dir, processed_dir
 
-def process_module(module_name, raw_dir, processed_dir, auto_yes=False):
-    """
-    Prompts the user to run a specific processing module.
+# Restart support: the file each stage produces, used to detect completed work.
+MODULE_OUTPUTS = {
+    "kalman_concat": "{exp}_{dive}_filtered_datatable.csv",
+    "kalman_filter": "{exp}_{dive}_final_datatable.csv",
+    "kalman_assess": "{exp}_{dive}_kalman_assessment.csv",
+    "kalman_offset": "{exp}_{dive}_filtered_offset_final.csv",
+}
 
-    Parameters
-    ----------
-    module_name : str
-        Name of the module to process (without the 'processes.' prefix).
-    raw_dir : Path
-        Directory containing raw data.
-    processed_dir : Path
-        Directory where processed data will be saved.
+
+def module_output_path(module_name, processed_dir):
+    dive = processed_dir.name
+    exp = processed_dir.parent.parent.name
+    pattern = MODULE_OUTPUTS.get(module_name)
+    return processed_dir / pattern.format(exp=exp, dive=dive) if pattern else None
+
+
+def process_module(module_name, raw_dir, processed_dir, auto_yes=False, force=False):
+    """
+    Runs one processing module, with resume support: when the module's output
+    already exists it is skipped (interactive mode asks; --yes mode skips
+    automatically unless --force is given).
+    Returns 'ok', 'skipped', or 'failed'.
     """
     try:
         module = importlib.import_module(f"processors.{module_name}")
-
-        # Add a special note for the UTM assessment module.
-        if module_name == "kalman_offset":
-            print(
-                "\nNOTE: The offset Assessment step will offset the vehicle's location and save a final data file for upload in Unreal."
-            )
-
-        if auto_yes:
-            proceed = "yes"
-        else:
-            proceed = input(f"Do you want to process {module_name}? (yes/no): ").strip().lower()
-        if proceed == "yes":
-            print(f"\nProcessing {module_name}...")
-            module.process_data(raw_dir, processed_dir)
-            print(f"Finished processing {module_name}.")
-        else:
-            print(f"Skipping {module_name}.")
     except ImportError as e:
-        print(f"Error importing processes.{module_name}: {e}")
+        print(f"Error importing processors.{module_name}: {e}")
         sys.exit(1)
+
+    out_path = module_output_path(module_name, processed_dir)
+    already_done = out_path is not None and out_path.exists()
+
+    if already_done and not force:
+        if auto_yes:
+            print(f"\n[resume] {module_name}: output {out_path.name} already exists -- "
+                  f"skipping (use --force to regenerate).")
+            return "skipped"
+        redo = input(f"{module_name}: output {out_path.name} already exists. "
+                     f"Reprocess it? (yes/no): ").strip().lower()
+        if redo != "yes":
+            print(f"Skipping {module_name} (output kept).")
+            return "skipped"
+    elif not auto_yes and not already_done:
+        proceed = input(f"Do you want to process {module_name}? (yes/no): ").strip().lower()
+        if proceed != "yes":
+            print(f"Skipping {module_name}.")
+            return "skipped"
+
+    # Add a special note for the UTM assessment module.
+    if module_name == "kalman_offset":
+        print(
+            "\nNOTE: The offset Assessment step will offset the vehicle's location and save a final data file for upload in Unreal."
+        )
+
+    print(f"\nProcessing {module_name}...")
+    try:
+        module.process_data(raw_dir, processed_dir)
+    except Exception as e:
+        print(f"\nERROR in {module_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return "failed"
+    print(f"Finished processing {module_name}.")
+    return "ok"
 
 
 def main():
@@ -107,6 +136,8 @@ def main():
     parser.add_argument("--dive", help="Dive folder (e.g. H2075)")
     parser.add_argument("--yes", action="store_true",
                         help="Run all modules without per-module confirmation")
+    parser.add_argument("--force", action="store_true",
+                        help="Rerun modules even when their outputs already exist")
     args = parser.parse_args()
 
     print("--------------------------------------------------")
@@ -123,12 +154,25 @@ def main():
         "kalman_offset"
     ]
 
+    statuses = {}
     for module in modules:
-        process_module(module, raw_dir, processed_dir, auto_yes=args.yes)
+        status = process_module(module, raw_dir, processed_dir,
+                                auto_yes=args.yes, force=args.force)
+        statuses[module] = status
+        if status == "failed":
+            print(f"\nAborting: {module} failed; downstream modules depend on its output.")
+            break
 
     print("\n--------------------------------------------------")
-    print("All selected processes completed.")
-    print(f"Check '{processed_dir}' for output files.")
+    print("Run summary:")
+    for name, status in statuses.items():
+        marker = {"ok": "done", "skipped": "skipped", "failed": "FAILED"}[status]
+        print(f"  {name:16s} {marker}")
+    if any(s == "failed" for s in statuses.values()):
+        print("Fix the issue and rerun -- completed modules will be skipped")
+        print("automatically (use --force to redo them).")
+    else:
+        print(f"Check '{processed_dir}' for output files.")
     print("--------------------------------------------------")
 
 if __name__ == "__main__":
