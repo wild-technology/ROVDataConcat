@@ -44,10 +44,13 @@ def parse_sdyn_file(filepath):
         r'(\d{3})(\d{2}\.\d+),'  # Longitude degrees and minutes
         r'([EW]),'
         r'\d+,\d+,'  # Skip fix quality and satellite count
-        # NOTE: in a standard GPGGA sentence this field is HDOP (dimensionless),
-        # not a metric accuracy. Downstream (kalman_filter) squares this value
-        # and uses it as measurement variance in m^2 -- verify against the
-        # Sonardyne SDYN spec that this field really is a positional accuracy.
+        # This field occupies the HDOP slot of a standard GPGGA sentence, but
+        # in the Sonardyne SDYN output it behaves as an estimated positional
+        # accuracy in meters: on NA167/H2075 it is ~14.5 m at ~1024 m depth
+        # (~1.4% of slant range, matching typical USBL error specs), whereas a
+        # dimensionless HDOP would sit near 1-2. Downstream (kalman_filter)
+        # squares it as measurement variance in m^2, which is consistent with
+        # that interpretation.
         r'([\d.]+),'  # Accuracy
         r'([-0-9.]+),'  # Depth
         r'M,0\.0,M,0\.0,'

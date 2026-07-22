@@ -24,8 +24,9 @@ import csv
 import rasterio
 import numpy as np
 import matplotlib.pyplot as plt
+from pyproj import CRS, Proj, Transformer
 
-from processors.common import expedition_dive_from_processed_dir
+from processors.common import expedition_dive_from_processed_dir, utm_proj_string
 
 # Vehicle position is shifted this many meters backwards along the heading.
 OFFSET_M = 2.0
@@ -70,8 +71,19 @@ def process_data(raw_dir, processed_dir):
 
     expedition, dive = expedition_dive_from_processed_dir(processed_dir)
 
-    # Build filenames incorporating the dive and expedition.
-    geotiff_path = raw_dir / f"{dive}_k2mapping_geotiff_utm4n.tif"
+    # Locate the dive GeoTIFF by pattern; the UTM zone suffix varies by region
+    # (e.g. ..._utm4n.tif, ..._utm53n.tif), so don't hard-code it.
+    candidates = sorted(raw_dir.glob(f"{dive}_k2mapping_geotiff*.tif"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No GeoTIFF matching '{dive}_k2mapping_geotiff*.tif' found in {raw_dir}"
+        )
+    if len(candidates) > 1:
+        print(f"Warning: multiple GeoTIFFs found, using the first: "
+              f"{[c.name for c in candidates]}")
+    geotiff_path = candidates[0]
+    print(f"Using GeoTIFF: {geotiff_path.name}")
+
     csv_path = processed_dir / f"{expedition}_{dive}_final_datatable.csv"
     output_file = processed_dir / f"{expedition}_{dive}_filtered_offset_final.csv"
 
@@ -99,51 +111,75 @@ def process_data(raw_dir, processed_dir):
     df['Offset_x'] = df[x_col]
     df['Offset_y'] = df[y_col]
 
-    # Function to sample the center pixel from the raster.
-    def sample_raster_values(raster_path, x_series, y_series):
-        coords = list(zip(x_series, y_series))
-        with rasterio.open(raster_path) as src:
-            sampled = list(src.sample(coords))
-        return [val[0] for val in sampled]
+    # ------------------------------------------------------------------
+    # Rebuild the UTM projection kalman_filter used (derived from the same
+    # first valid lat/long, so it selects the same zone), then transform the
+    # offset positions into the raster's CRS for sampling. This makes the
+    # sampling correct even when the GeoTIFF is in a different UTM zone or
+    # datum than the kalman coordinates.
+    # ------------------------------------------------------------------
+    valid_ll = df[['kalman_lat', 'kalman_long']].dropna()
+    if valid_ll.empty:
+        raise ValueError("No kalman_lat/kalman_long values in the final datatable; "
+                         "cannot determine the vehicle UTM zone.")
+    first_lat = float(valid_ll.iloc[0]['kalman_lat'])
+    first_lon = float(valid_ll.iloc[0]['kalman_long'])
+    vehicle_proj_str = utm_proj_string(first_lon, first_lat)
+    vehicle_crs = CRS.from_proj4(vehicle_proj_str)
+    vehicle_proj = Proj(vehicle_proj_str)
 
-    # Warn if the raster CRS may not match the UTM zone used for kalman_x/y.
     with rasterio.open(geotiff_path) as src:
-        print(f"GeoTIFF CRS: {src.crs} -- verify this matches the UTM zone used by kalman_filter.")
+        raster_crs = src.crs
+        print(f"Vehicle CRS: {vehicle_crs.to_string()}")
+        print(f"GeoTIFF CRS: {raster_crs}")
+        if raster_crs is None:
+            raise ValueError(f"GeoTIFF {geotiff_path.name} has no CRS; cannot sample safely.")
+        to_raster = Transformer.from_crs(vehicle_crs, raster_crs, always_xy=True)
+        raster_x, raster_y = to_raster.transform(
+            df['Offset_x'].to_numpy(), df['Offset_y'].to_numpy()
+        )
 
-    # Resample GeoTIFF at the offset positions (center pixel).
-    df['geotiff_value'] = sample_raster_values(geotiff_path, df[x_col], df[y_col])
-    df['below_surface'] = df[depth_col] < df['geotiff_value'] + MIN_CLEARANCE_M
-    df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + MIN_CLEARANCE_M
+        # Center-pixel sample at every offset position. Off-raster and nodata
+        # samples become NaN so they impose no depth constraint (previously
+        # they sampled as 0 and forced the depth to the sea surface).
+        coords = list(zip(raster_x, raster_y))
+        sampled = [
+            float(val[0]) if not np.ma.is_masked(val[0]) else np.nan
+            for val in src.sample(coords, masked=True)
+        ]
+        df['geotiff_value'] = sampled
+        n_nodata = int(np.isnan(sampled).sum())
+        if n_nodata:
+            print(f"Note: {n_nodata} of {len(sampled)} positions are off-raster or "
+                  f"nodata; their depths are left unadjusted.")
+        df['below_surface'] = df[depth_col] < df['geotiff_value'] + MIN_CLEARANCE_M
+        df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + MIN_CLEARANCE_M
 
-    # New function: sample neighboring pixel values from a window.
-    def sample_neighbor_values(raster_path, x, y, window_size=3):
+        # Neighbor evaluation: raise depth to MIN_CLEARANCE_M above the highest
+        # pixel in the 3x3 window around each offset position.
         from rasterio.windows import Window
-        with rasterio.open(raster_path) as src:
-            # Convert geographic coordinate (x, y) to row, col indices.
-            row, col = src.index(x, y)
+
+        def max_neighbor_value(x, y, window_size=3):
+            row_idx, col_idx = src.index(x, y)
             half = window_size // 2
-            window = Window(col - half, row - half, window_size, window_size)
-            data = src.read(1, window=window, boundless=True)
-        return data.flatten()
+            # Clamp the window to the raster extent (avoids boundless reads,
+            # which are buggy in some rasterio versions and slower).
+            r0, c0 = max(row_idx - half, 0), max(col_idx - half, 0)
+            r1 = min(row_idx + half + 1, src.height)
+            c1 = min(col_idx + half + 1, src.width)
+            if r1 <= r0 or c1 <= c0:
+                return -np.inf  # entirely off-raster: no neighbor constraint
+            data = src.read(1, window=Window(c0, r0, c1 - c0, r1 - r0), masked=True)
+            if np.ma.is_masked(data) and data.mask.all():
+                return -np.inf  # all nodata: no neighbor constraint
+            return float(data.max())
 
-    # New function: adjust depth based on neighbor pixel values.
-    def adjust_depth_by_neighbors(row, raster_path, window_size=3):
-        x = row['Offset_x']
-        y = row['Offset_y']
-        current_depth = row[depth_col]
-        neighbors = sample_neighbor_values(raster_path, x, y, window_size)
-        max_neighbor = np.max(neighbors)
-        # If current_depth is less than MIN_CLEARANCE_M above the maximum
-        # neighbor elevation, raise it to exactly that clearance.
-        if current_depth - max_neighbor < MIN_CLEARANCE_M:
-            current_depth = max_neighbor + MIN_CLEARANCE_M
-        return current_depth
-
-    # Apply neighbor evaluation to adjust depth further if needed.
-    df[depth_col] = df.apply(
-        lambda row: adjust_depth_by_neighbors(row, geotiff_path, window_size=3),
-        axis=1
-    )
+        depths = df[depth_col].to_numpy(copy=True)
+        for pos, (x, y) in enumerate(coords):
+            max_nb = max_neighbor_value(x, y)
+            if depths[pos] - max_nb < MIN_CLEARANCE_M:
+                depths[pos] = max_nb + MIN_CLEARANCE_M
+        df[depth_col] = depths
 
     # Re-evaluate: ensure each new depth is at least MIN_CLEARANCE_M above the
     # center pixel's terrain value.
@@ -162,9 +198,10 @@ def process_data(raw_dir, processed_dir):
     print(f"Depth Summary: {num_below} out of {total_rows} depth values are "
           f"< {MIN_CLEARANCE_M}m above terrain (should be 0).")
 
-    # Create a scatter plot of offset positions.
+    # Create a scatter plot of offset positions (NaN depth_diff = off-raster,
+    # excluded from both groups).
     neg_mask = df['depth_diff'] < 0
-    pos_mask = ~neg_mask
+    pos_mask = df['depth_diff'] >= 0
 
     scatter_fig, scatter_ax = plt.subplots(figsize=(10, 8))
     if pos_mask.sum() > 0:
@@ -198,6 +235,14 @@ def process_data(raw_dir, processed_dir):
     # Create new columns for the final output.
     df['UTM_X'] = df['Offset_x']
     df['UTM_Y'] = df['Offset_y']
+
+    # Keep Latitude/Longitude consistent with the offset UTM position
+    # (previously the file carried the un-offset kalman lat/long alongside
+    # the offset UTM_X/UTM_Y).
+    off_lon, off_lat = vehicle_proj(df['Offset_x'].to_numpy(),
+                                    df['Offset_y'].to_numpy(), inverse=True)
+    df['kalman_lat'] = off_lat
+    df['kalman_long'] = off_lon
     # --------------------------------------------------------------------------
 
     # Rename columns for final CSV.

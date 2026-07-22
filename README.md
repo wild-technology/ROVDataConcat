@@ -75,12 +75,16 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Known caveats
+## Notes
 
-* The USBL "Accuracy" field is taken from the GPGGA slot that is HDOP in the
-  standard sentence; the Kalman filter squares it and uses it as measurement
-  variance in m². Verify against the Sonardyne SDYN output spec.
-* `kalman_offset.py` expects the dive GeoTIFF's CRS to match the UTM zone the
-  Kalman filter selected from the data (it prints both so you can check).
-* If no USBL/DVL coordinates convert to UTM, `kalman_filter.py` falls back to
-  UTM zone 4N.
+* The USBL "Accuracy" field occupies the HDOP slot of a standard GPGGA
+  sentence, but empirically it is an estimated positional accuracy in meters
+  (~1.4% of slant range on NA167/H2075), and the Kalman filter uses it as
+  such (variance = accuracy² in m²).
+* `kalman_offset.py` finds the dive GeoTIFF by the pattern
+  `<DIVE>_k2mapping_geotiff*.tif` and transforms coordinates into the
+  raster's CRS before sampling, so the raster may be in any georeferenced CRS.
+* Heading is verified compass convention (0° = North, clockwise): on
+  NA167/H2075 the DVL course-over-ground at transit speed matches compass
+  heading to a median 21°, versus ~80° (uncorrelated) for the math-angle
+  interpretation.

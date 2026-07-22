@@ -23,7 +23,7 @@ from filterpy.kalman import KalmanFilter
 from pyproj import Proj
 from scipy.ndimage import gaussian_filter1d
 
-from processors.common import expedition_dive_from_processed_dir
+from processors.common import expedition_dive_from_processed_dir, determine_utm_zone, utm_proj_string
 
 
 def deg2rad(deg):
@@ -84,27 +84,6 @@ def filter_heading(headings, window_size=11):
     return filtered_deg
 
 
-def determine_utm_zone(lon, lat):
-    """Determine the UTM zone for given longitude and latitude coordinates."""
-    zone_number = int((lon + 180) / 6) + 1
-
-    # Special cases for Norway and Svalbard
-    if 56.0 <= lat < 64.0 and 3.0 <= lon < 12.0:
-        zone_number = 32
-    if 72.0 <= lat < 84.0:
-        if 0.0 <= lon < 9.0:
-            zone_number = 31
-        elif 9.0 <= lon < 21.0:
-            zone_number = 33
-        elif 21.0 <= lon < 33.0:
-            zone_number = 35
-        elif 33.0 <= lon < 42.0:
-            zone_number = 37
-
-    hemisphere = "north" if lat >= 0 else "south"
-    return zone_number, hemisphere
-
-
 def latlon_to_utm(df, lat_col, lon_col, x_col, y_col):
     """Convert latitude/longitude to UTM coordinates dynamically determining UTM zone."""
     valid_mask = df[lat_col].notna() & df[lon_col].notna()
@@ -118,8 +97,7 @@ def latlon_to_utm(df, lat_col, lon_col, x_col, y_col):
     first_lon = float(first_valid_row[lon_col])
     zone_number, hemisphere = determine_utm_zone(first_lon, first_lat)
 
-    utm_proj_str = f"+proj=utm +zone={zone_number} +{hemisphere} +datum=WGS84 +units=m +no_defs"
-    utm_proj = Proj(utm_proj_str)
+    utm_proj = Proj(utm_proj_string(first_lon, first_lat))
 
     print(f"Using UTM Zone {zone_number}{hemisphere[0].upper()} for {lat_col}/{lon_col} conversion")
     print(f"Converting {valid_count} points from {lat_col}/{lon_col} to UTM...")
@@ -256,8 +234,11 @@ def process_data(raw_dir, processed_dir):
         recent_usbl_x = []
         recent_usbl_y = []
         if utm_proj is None:
-            print("Warning: No UTM projection could be determined. Using default UTM Zone 4N.")
-            utm_proj = Proj("+proj=utm +zone=4 +datum=WGS84 +units=m +no_defs")
+            # No coordinates converted, so there is no meaningful projection.
+            # kalman_lat/kalman_long stay NaN rather than being back-projected
+            # through an arbitrary default zone.
+            print("Warning: No UTM projection could be determined; "
+                  "kalman_lat/kalman_long will be empty.")
 
         print("Starting Kalman filter processing...")
         updates_applied = 0
@@ -338,12 +319,13 @@ def process_data(raw_dir, processed_dir):
             x_est, y_est, z_est, r_est, p_est, vx_est, vy_est, vz_est = kf.x
             df.at[i, "kalman_x"] = x_est
             df.at[i, "kalman_y"] = y_est
-            try:
-                lon_est, lat_est = utm_proj(x_est, y_est, inverse=True)
-                df.at[i, "kalman_lat"] = lat_est
-                df.at[i, "kalman_long"] = lon_est
-            except Exception as e:
-                print(f"Error converting UTM back to lat/long for ({x_est}, {y_est}): {e}")
+            if utm_proj is not None:
+                try:
+                    lon_est, lat_est = utm_proj(x_est, y_est, inverse=True)
+                    df.at[i, "kalman_lat"] = lat_est
+                    df.at[i, "kalman_long"] = lon_est
+                except Exception as e:
+                    print(f"Error converting UTM back to lat/long for ({x_est}, {y_est}): {e}")
             df.at[i, "kalman_depth"] = z_est
             df.at[i, "kalman_roll_deg"] = np.degrees(r_est)
             df.at[i, "kalman_pitch_deg"] = np.degrees(p_est)

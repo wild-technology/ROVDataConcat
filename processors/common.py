@@ -81,6 +81,33 @@ def best_fix_per_second(df: pd.DataFrame, quality_col: str = None):
     return out, orig, len(out)
 
 
+def determine_utm_zone(lon, lat):
+    """Determine the UTM zone (number, hemisphere) for a lon/lat coordinate."""
+    zone_number = int((lon + 180) / 6) + 1
+
+    # Special cases for Norway and Svalbard
+    if 56.0 <= lat < 64.0 and 3.0 <= lon < 12.0:
+        zone_number = 32
+    if 72.0 <= lat < 84.0:
+        if 0.0 <= lon < 9.0:
+            zone_number = 31
+        elif 9.0 <= lon < 21.0:
+            zone_number = 33
+        elif 21.0 <= lon < 33.0:
+            zone_number = 35
+        elif 33.0 <= lon < 42.0:
+            zone_number = 37
+
+    hemisphere = "north" if lat >= 0 else "south"
+    return zone_number, hemisphere
+
+
+def utm_proj_string(lon, lat):
+    """proj4 string for the WGS84 UTM zone containing lon/lat."""
+    zone_number, hemisphere = determine_utm_zone(lon, lat)
+    return f"+proj=utm +zone={zone_number} +{hemisphere} +datum=WGS84 +units=m +no_defs"
+
+
 def expedition_dive_from_processed_dir(processed_dir: Path):
     """
     Derive (expedition, dive) from the standardized layout
