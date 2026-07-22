@@ -3,6 +3,8 @@ import re
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 
+from processors.common import best_fix_per_second, drop_duplicate_timestamps
+
 def parse_sdyn_file(filepath):
     """
     Parses an SDYN file and extracts USBL fix data.
@@ -41,7 +43,11 @@ def parse_sdyn_file(filepath):
         r'([NS]),'
         r'(\d{3})(\d{2}\.\d+),'  # Longitude degrees and minutes
         r'([EW]),'
-        r'\d+,\d+,'  # Skip satellites and fix quality
+        r'\d+,\d+,'  # Skip fix quality and satellite count
+        # NOTE: in a standard GPGGA sentence this field is HDOP (dimensionless),
+        # not a metric accuracy. Downstream (kalman_filter) squares this value
+        # and uses it as measurement variance in m^2 -- verify against the
+        # Sonardyne SDYN spec that this field really is a positional accuracy.
         r'([\d.]+),'  # Accuracy
         r'([-0-9.]+),'  # Depth
         r'M,0\.0,M,0\.0,'
@@ -123,64 +129,6 @@ def process_all_sdyn_files(root_directory):
     else:
         return pd.DataFrame()
 
-def preserve_closest_fix_per_second(df):
-    """
-    For each unique second (truncating microseconds):
-      - If only one fix exists in that second, truncate the microseconds.
-      - If multiple fixes occur, choose the row with the best (lowest) accuracy.
-
-    The final Timestamp is forced to be a string in ISO8601 format (UTC) without subseconds.
-
-    Parameters:
-        df (pandas.DataFrame): DataFrame containing a 'Timestamp' column.
-
-    Returns:
-        pandas.DataFrame: Deduplicated DataFrame with Timestamp as a string.
-    """
-    if df.empty:
-        return df.copy()
-
-    df = df.copy()
-    df["truncated"] = df["Timestamp"].apply(lambda dt: dt.replace(microsecond=0))
-    chosen_rows = []
-    for truncated_val, group in df.groupby("truncated"):
-        # Choose the row with the lowest Accuracy value
-        best_idx = group["Accuracy"].idxmin()
-        best_row = group.loc[best_idx].copy()
-        best_row["Timestamp"] = truncated_val.strftime("%Y-%m-%dT%H:%M:%SZ")
-        chosen_rows.append(best_row)
-
-    df_final = pd.DataFrame(chosen_rows)
-    if "truncated" in df_final.columns:
-        df_final.drop(columns=["truncated"], inplace=True)
-    df_final.reset_index(drop=True, inplace=True)
-    df_final["Timestamp"] = df_final["Timestamp"].apply(
-        lambda t: t if isinstance(t, str) else t.strftime("%Y-%m-%dT%H:%M:%SZ")
-    )
-    return df_final
-
-def remove_timestamp_duplicates(df):
-    """
-    Removes rows with duplicate timestamps by keeping only the row with the best (lowest) accuracy.
-
-    Parameters:
-        df (pandas.DataFrame): DataFrame containing a 'Timestamp' column.
-
-    Returns:
-        pandas.DataFrame: DataFrame with duplicate timestamps removed.
-        int: Number of duplicate rows removed.
-    """
-    if df.empty:
-        return df.copy(), 0
-
-    before_count = len(df)
-    # Sort by Accuracy so that the best (lowest) value appears first,
-    # then drop duplicates based on Timestamp.
-    df_no_dupes = df.sort_values("Accuracy").drop_duplicates(subset=["Timestamp"], keep="first")
-    removed_count = before_count - len(df_no_dupes)
-
-    return df_no_dupes, removed_count
-
 def process_dive_vehicle(dive_summary, sdyn_data):
     """
     Filters and processes SDYN data for a given dive.
@@ -211,12 +159,11 @@ def process_dive_vehicle(dive_summary, sdyn_data):
         if vehicle == "Unknown":
             continue
         df_vehicle = df_dive[df_dive["Vehicle"] == vehicle].copy()
-        df_vehicle = preserve_closest_fix_per_second(df_vehicle)
-
-        # Remove any remaining duplicate timestamps by selecting the best accuracy.
-        df_vehicle, dupes_removed = remove_timestamp_duplicates(df_vehicle)
-        if dupes_removed > 0:
-            print(f"Removed {dupes_removed} additional duplicate timestamps for dive {dive_id}, vehicle {vehicle}")
+        # Keep the best-accuracy fix per second; result is chronologically sorted.
+        df_vehicle, orig, final = best_fix_per_second(df_vehicle, quality_col="Accuracy")
+        if orig != final:
+            print(f"Reduced {orig} fixes to {final} (best accuracy per second) "
+                  f"for dive {dive_id}, vehicle {vehicle}")
 
         processed[vehicle] = df_vehicle
 
@@ -273,8 +220,8 @@ def process_data(root_directory):
             dive_out_dir.mkdir(parents=True, exist_ok=True)
 
             for vehicle, df_vehicle in processed.items():
-                # Final check for any duplicate timestamps based on best accuracy
-                df_final, final_dupes_removed = remove_timestamp_duplicates(df_vehicle)
+                # Final safety net: drop any duplicate timestamps, keep chronological order.
+                df_final, final_dupes_removed = drop_duplicate_timestamps(df_vehicle)
                 if final_dupes_removed > 0:
                     print(
                         f"Removed {final_dupes_removed} final duplicate timestamps for dive {dive_id}, vehicle {vehicle}")

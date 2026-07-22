@@ -23,6 +23,8 @@ from filterpy.kalman import KalmanFilter
 from pyproj import Proj
 from scipy.ndimage import gaussian_filter1d
 
+from processors.common import expedition_dive_from_processed_dir
+
 
 def deg2rad(deg):
     """Safely convert degrees to radians, handling NaNs."""
@@ -124,24 +126,19 @@ def latlon_to_utm(df, lat_col, lon_col, x_col, y_col):
 
     df[x_col] = np.nan
     df[y_col] = np.nan
-    success_count = 0
-    for idx, row in df[valid_mask].iterrows():
-        try:
-            lat = float(row[lat_col])
-            lon = float(row[lon_col])
-            x, y = utm_proj(lon, lat)
-            df.at[idx, x_col] = x
-            df.at[idx, y_col] = y
-            success_count += 1
-        except Exception as e:
-            print(f"Error converting coordinates ({lat}, {lon}): {e}")
+    lons = df.loc[valid_mask, lon_col].astype(float).to_numpy()
+    lats = df.loc[valid_mask, lat_col].astype(float).to_numpy()
+    xs, ys = utm_proj(lons, lats)
+    df.loc[valid_mask, x_col] = xs
+    df.loc[valid_mask, y_col] = ys
+    success_count = int(df[x_col].notna().sum())
 
     print(f"Successfully converted {success_count} of {valid_count} points.")
     if success_count > 0:
         sample = df[[lat_col, lon_col, x_col, y_col]].dropna().head(3)
         print("Sample conversions:")
         for _, row in sample.iterrows():
-            print(f"  {row[lat_col]}, {row[lon_col]} → {row[x_col]}, {row[y_col]}")
+            print(f"  {row[lat_col]}, {row[lon_col]} -> {row[x_col]}, {row[y_col]}")
 
     return success_count, utm_proj
 
@@ -160,9 +157,7 @@ def process_data(raw_dir, processed_dir):
         raw_dir = Path(raw_dir).resolve()
         processed_dir = Path(processed_dir).resolve()
 
-        # Determine expedition and dive from processed_dir: <base>/<EXPEDITION>/RUMI_processed/<DIVE>
-        dive = processed_dir.name
-        expedition = processed_dir.parent.parent.name
+        expedition, dive = expedition_dive_from_processed_dir(processed_dir)
 
         # Setup file paths using provided directories.
         input_file = processed_dir / f"{expedition}_{dive}_filtered_datatable.csv"
@@ -179,19 +174,31 @@ def process_data(raw_dir, processed_dir):
 
         print(f"Loaded {len(df)} rows from input file.")
 
-        # Filter rows with depth <= -20 m.
+        # Filter rows with depth <= -20 m. Note this also drops rows with no
+        # depth reading (NaN fails the comparison) -- report both counts.
         original_count = len(df)
+        nan_depth = int(df["Herc_Depth_1"].isna().sum())
         df = df[df["Herc_Depth_1"] <= -20]
-        print(f"Filtered to {len(df)} rows where depth <= -20m (removed {original_count - len(df)} rows)")
+        print(f"Filtered to {len(df)} rows where depth <= -20m "
+              f"(removed {original_count - len(df)} rows, of which {nan_depth} had no depth reading)")
 
         # Remove duplicate timestamps BEFORE Kalman filter processing.
+        # Prefer rows that carry a sealog event (consistent with kalman_concat),
+        # and ALWAYS restore chronological order afterwards -- the filter's dt
+        # computation assumes monotonically increasing timestamps.
         if df["Timestamp"].duplicated().any():
-            print("Duplicate timestamps detected. Removing duplicates (preferring rows with null event_value)...")
+            print("Duplicate timestamps detected. Removing duplicates (preferring rows with event_value)...")
             if "event_value" in df.columns:
-                df = df.sort_values("event_value", na_position="first").drop_duplicates(subset=["Timestamp"], keep="first")
+                df = (
+                    df.assign(_no_event=df["event_value"].isnull())
+                    .sort_values(["Timestamp", "_no_event"], kind="mergesort")
+                    .drop_duplicates(subset=["Timestamp"], keep="first")
+                    .drop(columns=["_no_event"])
+                )
             else:
                 df = df.drop_duplicates(subset=["Timestamp"])
             print(f"After deduplication, {len(df)} rows remain.")
+        df = df.sort_values("Timestamp", kind="mergesort")
 
         # Convert to UTM coordinates for USBL and DVL data.
         usbl_success, usbl_proj = latlon_to_utm(df, "Lat_USBL", "Long_USBL", "x_usbl", "y_usbl")
@@ -254,6 +261,13 @@ def process_data(raw_dir, processed_dir):
 
         print("Starting Kalman filter processing...")
         updates_applied = 0
+
+        def scalar_update(value, state_index, variance):
+            """Apply a 1-D measurement update on a single state component."""
+            H = np.zeros((1, 8))
+            H[0, state_index] = 1.0
+            kf.update(np.array([float(value)]), H=H, R=np.array([[variance]]))
+
         for i, row in df.iterrows():
             current_time = row["Timestamp"]
             dt = 1.0 if prev_time is None else max((current_time - prev_time).total_seconds(), 0.001)
@@ -269,80 +283,51 @@ def process_data(raw_dir, processed_dir):
 
             # Depth update.
             if not np.isnan(row.get("Herc_Depth_1", np.nan)):
-                H_depth = np.zeros((1, 8))
-                H_depth[0, 2] = 1.0
-                R_depth = np.array([[0.1 ** 2]])
-                kf.update(row["Herc_Depth_1"], H=H_depth, R=R_depth)
+                scalar_update(row["Herc_Depth_1"], 2, 0.1 ** 2)
                 updates_applied += 1
 
-            # USBL update with an outlier check.
+            # USBL update with a 3-sigma outlier gate over the last 20 accepted fixes.
             if not np.isnan(row.get("x_usbl", np.nan)) and not np.isnan(row.get("y_usbl", np.nan)):
+                accept = True
+                if len(recent_usbl_x) >= 2:
+                    mean_x, mean_y = np.mean(recent_usbl_x), np.mean(recent_usbl_y)
+                    std_x, std_y = np.std(recent_usbl_x), np.std(recent_usbl_y)
+                    # std == 0 means the recent fixes are identical -- treat as
+                    # in-range rather than rejecting the fix outright.
+                    if std_x > 0 and abs(row["x_usbl"] - mean_x) > 3 * std_x:
+                        accept = False
+                    if std_y > 0 and abs(row["y_usbl"] - mean_y) > 3 * std_y:
+                        accept = False
                 recent_usbl_x.append(row["x_usbl"])
                 recent_usbl_y.append(row["y_usbl"])
                 if len(recent_usbl_x) > 20:
                     recent_usbl_x.pop(0)
                     recent_usbl_y.pop(0)
-                if len(recent_usbl_x) >= 2:
-                    mean_x = np.mean(recent_usbl_x)
-                    mean_y = np.mean(recent_usbl_y)
-                    std_x = np.std(recent_usbl_x)
-                    std_y = np.std(recent_usbl_y)
-                    if (std_x > 0 and std_y > 0 and
-                            abs(row["x_usbl"] - mean_x) <= 3 * std_x and
-                            abs(row["y_usbl"] - mean_y) <= 3 * std_y):
-                        H_x = np.zeros((1, 8))
-                        H_x[0, 0] = 1.0
-                        R_x = np.array([[((row["Accuracy_USBL"] if not np.isnan(row.get("Accuracy_USBL", np.nan))
-                                            else 5.0) ** 2)]])
-                        kf.update(np.array([row["x_usbl"]]), H=H_x, R=R_x)
-                        updates_applied += 1
-                        H_y = np.zeros((1, 8))
-                        H_y[0, 1] = 1.0
-                        R_y = np.array([[((row["Accuracy_USBL"] if not np.isnan(row.get("Accuracy_USBL", np.nan))
-                                            else 5.0) ** 2)]])
-                        kf.update(np.array([row["y_usbl"]]), H=H_y, R=R_y)
-                        updates_applied += 1
-                else:
-                    H_x = np.zeros((1, 8))
-                    H_x[0, 0] = 1.0
-                    R_x = np.array([[((row["Accuracy_USBL"] if not np.isnan(row.get("Accuracy_USBL", np.nan))
-                                        else 5.0) ** 2)]])
-                    kf.update(np.array([row["x_usbl"]]), H=H_x, R=R_x)
-                    updates_applied += 1
-                    H_y = np.zeros((1, 8))
-                    H_y[0, 1] = 1.0
-                    R_y = np.array([[((row["Accuracy_USBL"] if not np.isnan(row.get("Accuracy_USBL", np.nan))
-                                        else 5.0) ** 2)]])
-                    kf.update(np.array([row["y_usbl"]]), H=H_y, R=R_y)
-                    updates_applied += 1
+                if accept:
+                    acc = row.get("Accuracy_USBL", np.nan)
+                    usbl_var = (acc if not np.isnan(acc) else 5.0) ** 2
+                    scalar_update(row["x_usbl"], 0, usbl_var)
+                    scalar_update(row["y_usbl"], 1, usbl_var)
+                    updates_applied += 2
 
-            # DVL update if depth >= -30.
+            # DVL update only at depth (<= -30 m), i.e. where the DVL has bottom
+            # lock and its dead-reckoning solution is trustworthy.
+            # NOTE: the original condition was `>= -30`, which combined with the
+            # depth <= -20 pre-filter meant DVL was only used in a 10 m band and,
+            # in practice, never (verified on NA167/H2075: 0 of 48,805 DVL fixes used).
             if not np.isnan(row.get("x_dvl", np.nan)) and not np.isnan(row.get("y_dvl", np.nan)):
-                if row["Herc_Depth_1"] >= -30:
-                    H_x_dvl = np.zeros((1, 8))
-                    H_x_dvl[0, 0] = 1.0
-                    R_x_dvl = np.array([[3.0 ** 2]])
-                    kf.update(np.array([row["x_dvl"]]), H=H_x_dvl, R=R_x_dvl)
-                    updates_applied += 1
-                    H_y_dvl = np.zeros((1, 8))
-                    H_y_dvl[0, 1] = 1.0
-                    R_y_dvl = np.array([[3.0 ** 2]])
-                    kf.update(np.array([row["y_dvl"]]), H=H_y_dvl, R=R_y_dvl)
-                    updates_applied += 1
+                if row["Herc_Depth_1"] <= -30:
+                    scalar_update(row["x_dvl"], 0, 3.0 ** 2)
+                    scalar_update(row["y_dvl"], 1, 3.0 ** 2)
+                    updates_applied += 2
 
             # Orientation updates.
             if not np.isnan(row.get("Roll_rad", np.nan)):
-                H_roll = np.zeros((1, 8))
-                H_roll[0, 3] = 1.0
-                R_roll = np.array([[0.017 ** 2]])
-                kf.update(np.array([row["Roll_rad"]]), H=H_roll, R=R_roll)
+                scalar_update(row["Roll_rad"], 3, 0.017 ** 2)
                 updates_applied += 1
 
             if not np.isnan(row.get("Pitch_rad", np.nan)):
-                H_pitch = np.zeros((1, 8))
-                H_pitch[0, 4] = 1.0
-                R_pitch = np.array([[0.017 ** 2]])
-                kf.update(np.array([row["Pitch_rad"]]), H=H_pitch, R=R_pitch)
+                scalar_update(row["Pitch_rad"], 4, 0.017 ** 2)
                 updates_applied += 1
 
             # Wrap orientation angles.

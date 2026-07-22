@@ -1,7 +1,8 @@
 from pathlib import Path
 import pandas as pd
 import csv
-from datetime import datetime, timezone
+
+from processors.common import drop_duplicate_timestamps
 
 # ------------------------------------------------------------------------------
 # Function: get_file_paths
@@ -204,24 +205,8 @@ def load_sealog_file(file_path):
 # Function: remove_timestamp_duplicates
 # ------------------------------------------------------------------------------
 def remove_timestamp_duplicates(df):
-    """
-    Removes rows with duplicate timestamps, keeping only the first occurrence.
-
-    Parameters:
-      df (pandas.DataFrame): DataFrame containing a 'Timestamp' column.
-
-    Returns:
-      pandas.DataFrame: DataFrame with duplicate timestamps removed.
-      int: Number of duplicate rows removed.
-    """
-    if df is None or df.empty:
-        return df, 0
-
-    before_count = len(df)
-    df_no_dupes = df.drop_duplicates(subset=["Timestamp"])
-    removed_count = before_count - len(df_no_dupes)
-
-    return df_no_dupes, removed_count
+    """Shared duplicate-timestamp removal (see processors.common)."""
+    return drop_duplicate_timestamps(df)
 
 # ------------------------------------------------------------------------------
 # Function: process_single_dive

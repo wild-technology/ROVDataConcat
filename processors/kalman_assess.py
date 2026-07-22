@@ -1,11 +1,9 @@
 from pathlib import Path
 import pandas as pd
-from pathlib import Path
-import pandas as pd
-import csv
-import rasterio
 import numpy as np
 import matplotlib.pyplot as plt
+
+from processors.common import expedition_dive_from_processed_dir
 
 
 def process_data(raw_dir, processed_dir):
@@ -20,8 +18,6 @@ def process_data(raw_dir, processed_dir):
     processed_dir : Path or str
         Directory where processed data is saved and where output will be written.
     """
-    # Convert to absolute Path objects.
-    # Convert to absolute Path objects.
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
 
@@ -30,9 +26,7 @@ def process_data(raw_dir, processed_dir):
 
     print("Running Kalman Assessment Process...")
 
-    # Derive expedition/dive from processed_dir: <base>/<EXPEDITION>/RUMI_processed/<DIVE>
-    dive = processed_dir.name
-    expedition = processed_dir.parent.parent.name
+    expedition, dive = expedition_dive_from_processed_dir(processed_dir)
 
     # Match what kalman_filter writes: "{expedition}_{dive}_kalman_filtered_data.csv"
     input_file = processed_dir / f"{expedition}_{dive}_kalman_filtered_data.csv"
@@ -59,9 +53,24 @@ def process_data(raw_dir, processed_dir):
     def calculate_smoothness(data):
         return data.diff().dropna().std() if data is not None and len(data) > 1 else np.nan
 
+    def calculate_smoothness_circular(deg_series):
+        """Smoothness for angular data: wrap step differences into (-180, 180]."""
+        if deg_series is None or len(deg_series) < 2:
+            return np.nan
+        diffs = deg_series.diff().dropna()
+        wrapped = (diffs + 180) % 360 - 180
+        return wrapped.std()
+
     def calculate_consistency(filtered, raw):
         min_len = min(len(filtered), len(raw))
         return np.abs(filtered[:min_len] - raw[:min_len]).mean() if filtered is not None and raw is not None else np.nan
+
+    def calculate_consistency_circular(filtered_deg, raw_deg):
+        """Mean absolute angular error, accounting for 0/360 wrap."""
+        if filtered_deg is None or raw_deg is None:
+            return np.nan
+        diff = (filtered_deg - raw_deg + 180) % 360 - 180
+        return np.abs(diff).mean()
 
     # Compute smoothness metrics.
     smoothness_metrics = {
@@ -78,8 +87,8 @@ def process_data(raw_dir, processed_dir):
             'Filtered': calculate_smoothness(df['kalman_pitch_deg'])
         },
         'Yaw': {
-            'Raw': calculate_smoothness(df['Heading']),
-            'Filtered': calculate_smoothness(df['kalman_yaw_deg'])
+            'Raw': calculate_smoothness_circular(df['Heading']),
+            'Filtered': calculate_smoothness_circular(df['kalman_yaw_deg'])
         }
     }
 
@@ -88,7 +97,7 @@ def process_data(raw_dir, processed_dir):
         'Depth': calculate_consistency(df['kalman_depth'], df['Herc_Depth_1']),
         'Roll': calculate_consistency(df['kalman_roll_deg'], df['Roll']),
         'Pitch': calculate_consistency(df['kalman_pitch_deg'], df['Pitch']),
-        'Yaw': calculate_consistency(df['kalman_yaw_deg'], df['Heading']),
+        'Yaw': calculate_consistency_circular(df['kalman_yaw_deg'], df['Heading']),
         'X': calculate_consistency(df['kalman_x'], df['x_usbl']),
         'Y': calculate_consistency(df['kalman_y'], df['y_usbl'])
     }

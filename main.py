@@ -1,41 +1,44 @@
 #!/usr/bin/env python3
 """
-Expedition Data Processing Orchestrator (v2) — fixed pathing, non-interactive
+Expedition Data Processing Orchestrator (v2) -- fixed pathing, non-interactive
 
 Runs all modules automatically, aborts on first error.
 Processed output directory: <root_dir>/RUMI_processed
 """
 
+import argparse
 import logging
 from pathlib import Path
-
-# Third-party / stdlib
-import pandas as pd  # noqa: F401  (kept if processors import relies on pandas presence)
 
 # Processor imports
 import processors.dive_summaries as dive_summaries
 import processors.process_dat as process_dat
-import processors.lat_long_uncertainty_USBL_sdyn as sdyn_usbl
+import processors.usbl_sdyn as sdyn_usbl
 import processors.sensors_sealog as sensors_sealog
 import processors.stillcam_images as stillcam_images
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+DEFAULT_RAW_DIR = Path("Z:/NA173")
 
 
-def get_directories():
+def get_directories(cli_dir=None):
     """
-    Ask for the raw data directory (root_dir).
-    The processed directory is fixed to <root_dir>/RUMI_processed.
+    Resolve the raw data directory (root_dir), from the CLI argument if given,
+    otherwise interactively. The processed directory is fixed to
+    <root_dir>/RUMI_processed.
     """
     logging.debug("Entered get_directories()")
-    default_dir = Path("Z:/NA173")
-    logging.debug(f"Default directory set to: {default_dir}")
+    default_dir = DEFAULT_RAW_DIR
 
-    print("Where is your raw data located?")
-    raw_input_val = input(f"Enter the path to the directory containing raw data [default: {default_dir}]: ").strip()
-    logging.debug(f"User input for raw data directory: '{raw_input_val}'")
-    root_dir = Path(raw_input_val) if raw_input_val else default_dir
-    logging.debug(f"Using raw data directory: {root_dir}")
+    if cli_dir is not None:
+        root_dir = Path(cli_dir)
+        if not root_dir.is_dir():
+            raise SystemExit(f"Error: The directory '{root_dir}' does not exist.")
+    else:
+        print("Where is your raw data located?")
+        raw_input_val = input(f"Enter the path to the directory containing raw data [default: {default_dir}]: ").strip()
+        root_dir = Path(raw_input_val) if raw_input_val else default_dir
 
     while not root_dir.is_dir():
         logging.debug(f"Directory '{root_dir}' does not exist.")
@@ -48,8 +51,8 @@ def get_directories():
     processed_dir.mkdir(parents=True, exist_ok=True)
     logging.debug(f"Processed data directory created or verified: {processed_dir}")
 
-    print(f"\n  • Raw data directory:     {root_dir}")
-    print(f"  • Processed data folder:  {processed_dir}")
+    print(f"\n  * Raw data directory:     {root_dir}")
+    print(f"  * Processed data folder:  {processed_dir}")
 
     logging.debug("Exiting get_directories()")
     return root_dir, processed_dir
@@ -75,14 +78,17 @@ def run_step(script_module, root_dir) -> bool:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="ROV raw data extraction pipeline (stage 1)")
+    parser.add_argument("--dir", help="Raw data root directory (skips the interactive prompt)")
+    args = parser.parse_args()
+
     logging.debug("Starting main()")
     print("--------------------------------------------------")
     print("     Expedition Data Processing Orchestrator (v2) ")
-    print("                 Non-interactive                  ")
     print("--------------------------------------------------")
 
     # 1) Get directories
-    root_dir, processed_dir = get_directories()
+    root_dir, processed_dir = get_directories(args.dir)
     logging.debug(f"Directories set. Root: {root_dir}, Processed: {processed_dir}")
 
     # 2) Dive summaries

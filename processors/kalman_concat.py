@@ -2,39 +2,39 @@ from pathlib import Path
 import pandas as pd
 import csv
 
+from processors.common import expedition_dive_from_processed_dir
+
 
 def remove_duplicate_timestamps_prioritizing_event(df):
     """
     Removes duplicate rows in df based on the 'Timestamp' column.
     For each group of rows sharing the same Timestamp, it prioritizes keeping
     the row where the 'event_value' column is not null (if available).
-
-    Parameters:
-      df (pd.DataFrame): The merged DataFrame with a 'Timestamp' column.
+    The result stays in chronological order.
 
     Returns:
       new_df (pd.DataFrame): DataFrame with duplicates removed.
-      duplicate_counts (dict): Dictionary with Timestamp as key and number of duplicates removed.
+      duplicate_counts (dict): Timestamp -> number of duplicates removed.
       total_removed (int): Total number of rows removed.
     """
-    unique_rows = []
-    duplicate_counts = {}
-    # Group by Timestamp (as datetime)
-    for ts, group in df.groupby("Timestamp"):
-        count = len(group)
-        if count > 1:
-            duplicate_counts[ts] = count - 1
-        # If 'event_value' exists, prioritize rows where event_value is not null
-        if 'event_value' in group.columns:
-            non_null = group[group['event_value'].notnull()]
-            if not non_null.empty:
-                chosen = non_null.iloc[0]
-            else:
-                chosen = group.iloc[0]
-        else:
-            chosen = group.iloc[0]
-        unique_rows.append(chosen)
-    new_df = pd.DataFrame(unique_rows)
+    dup_sizes = df.groupby("Timestamp").size()
+    duplicate_counts = {ts: n - 1 for ts, n in dup_sizes.items() if n > 1}
+
+    if "event_value" in df.columns:
+        # Stable sort: rows with a non-null event_value come first within each
+        # timestamp, then keep the first row per timestamp.
+        order = df["event_value"].isnull()
+        new_df = (
+            df.assign(_no_event=order)
+            .sort_values(["Timestamp", "_no_event"], kind="mergesort")
+            .drop_duplicates(subset=["Timestamp"], keep="first")
+            .drop(columns=["_no_event"])
+        )
+    else:
+        new_df = df.sort_values("Timestamp", kind="mergesort").drop_duplicates(
+            subset=["Timestamp"], keep="first"
+        )
+
     total_removed = df.shape[0] - new_df.shape[0]
     return new_df, duplicate_counts, total_removed
 
@@ -56,11 +56,7 @@ def process_data(raw_dir, processed_dir):
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
 
-    # Extract expedition and dive from the raw directory.
-    # Extract expedition and dive using processed_dir: <base>/<EXPEDITION>/RUMI_processed/<DIVE>
-    # Standardized structure adopted across modules.
-    dive = processed_dir.name
-    expedition = processed_dir.parent.parent.name
+    expedition, dive = expedition_dive_from_processed_dir(processed_dir)
 
     print("Running Kalman Concat Process...")
 
@@ -99,7 +95,7 @@ def process_data(raw_dir, processed_dir):
     roll_outlier_count = 0
 
     if pitch_col or roll_col:
-        outlier_mask = pd.Series([False] * len(merged_df))
+        outlier_mask = pd.Series(False, index=merged_df.index)
         threshold = 3  # Using 3 standard deviations as cutoff
 
         if pitch_col:

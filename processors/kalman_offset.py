@@ -3,10 +3,10 @@
 UTM Assessment and Vehicle Offset Processing Script
 
 Performs UTM assessment and adjusts vehicle positioning.
-After offsetting the vehicle’s (x, y) and initially adjusting depth
+After offsetting the vehicle's (x, y) and initially adjusting depth
 based on the sampled center pixel of the GeoTIFF, this function further
 checks the 3x3 neighborhood around the offset position. If any neighboring
-pixel is within 1m of the vehicle’s depth (i.e. if the vehicle is less than
+pixel is within 1m of the vehicle's depth (i.e. if the vehicle is less than
 1m above the maximum neighbor value), the depth is increased to be 1m above
 that neighbor value.
 
@@ -14,7 +14,7 @@ After this neighbor evaluation, the script re-evaluates that the new depth
 is at least 1m above the terrain (center pixel value) and adjusts if necessary.
 
 Finally, the script produces a scatter plot of the offset positions colored by
-depth difference (Depth – Terrain) in which any negative depth difference is shown in RED.
+depth difference (Depth - Terrain) in which any negative depth difference is shown in RED.
 It also prints an on-screen summary indicating how many depth values remain below terrain.
 """
 
@@ -24,6 +24,13 @@ import csv
 import rasterio
 import numpy as np
 import matplotlib.pyplot as plt
+
+from processors.common import expedition_dive_from_processed_dir
+
+# Vehicle position is shifted this many meters backwards along the heading.
+OFFSET_M = 2.0
+# Adjusted depth must end up at least this many meters above the terrain.
+MIN_CLEARANCE_M = 1.0
 
 def safe_get_loc(df, col_name):
     """
@@ -41,10 +48,10 @@ def safe_get_loc(df, col_name):
 def process_data(raw_dir, processed_dir):
     """
     Performs UTM assessment and adjusts vehicle positioning.
-    After offsetting the vehicle’s (x, y) and initially adjusting depth
+    After offsetting the vehicle's (x, y) and initially adjusting depth
     based on the sampled center pixel of the GeoTIFF, this function further
     checks the 3x3 neighborhood around the offset position. If any neighboring
-    pixel is within 1m of the vehicle’s depth (i.e. if the vehicle is less than
+    pixel is within 1m of the vehicle's depth (i.e. if the vehicle is less than
     1m above the maximum neighbor value), the depth is increased to be 1m above
     that neighbor value.
 
@@ -52,7 +59,7 @@ def process_data(raw_dir, processed_dir):
     is at least 1m above the terrain (center pixel value) and adjusts if necessary.
 
     Finally, the script produces a scatter plot of the offset positions colored by
-    depth difference (Depth – Terrain) in which any negative depth difference is shown in RED.
+    depth difference (Depth - Terrain) in which any negative depth difference is shown in RED.
     It also prints an on-screen summary indicating how many depth values remain below terrain.
     """
     print("Running UTM Assessment Process...")
@@ -61,9 +68,7 @@ def process_data(raw_dir, processed_dir):
     raw_dir = Path(raw_dir).resolve()
     processed_dir = Path(processed_dir).resolve()
 
-    # Extract expedition and dive from processed_dir: <base>/<EXPEDITION>/RUMI_processed/<DIVE>
-    expedition = processed_dir.parent.parent.name
-    dive = processed_dir.name
+    expedition, dive = expedition_dive_from_processed_dir(processed_dir)
 
     # Build filenames incorporating the dive and expedition.
     geotiff_path = raw_dir / f"{dive}_k2mapping_geotiff_utm4n.tif"
@@ -74,16 +79,21 @@ def process_data(raw_dir, processed_dir):
 
     # Define required columns.
     x_col, y_col, depth_col = 'kalman_x', 'kalman_y', 'kalman_depth'
-    heading_rad_col = 'Heading_rad'  # Filtered heading in radians
+    heading_rad_col = 'Heading_rad'  # Raw OCTANS heading in radians (compass convention)
 
     # -------------------------------------------------------------------------
     # 1) Preserve the original heading before using it for filtering/offset
     # -------------------------------------------------------------------------
     df['_orig_heading_rad'] = df[heading_rad_col].copy()
 
-    # Offset (x, y) by 2m backwards along Heading_rad.
-    df[x_col] = df[x_col] - (2 * np.cos(df[heading_rad_col]))
-    df[y_col] = df[y_col] - (2 * np.sin(df[heading_rad_col]))
+    # Offset (x, y) OFFSET_M meters backwards along the heading.
+    # Heading is a compass bearing (0 = North = +y/northing, 90 = East =
+    # +x/easting, clockwise), so the forward unit vector in UTM is
+    # (sin(h), cos(h)) and "backwards" subtracts it.
+    # (Previous code used (cos(h), sin(h)) -- the math-angle convention -- which
+    # pointed the offset in the wrong direction for compass headings.)
+    df[x_col] = df[x_col] - (OFFSET_M * np.sin(df[heading_rad_col]))
+    df[y_col] = df[y_col] - (OFFSET_M * np.cos(df[heading_rad_col]))
 
     # Save offset positions for later neighbor evaluation.
     df['Offset_x'] = df[x_col]
@@ -96,10 +106,14 @@ def process_data(raw_dir, processed_dir):
             sampled = list(src.sample(coords))
         return [val[0] for val in sampled]
 
+    # Warn if the raster CRS may not match the UTM zone used for kalman_x/y.
+    with rasterio.open(geotiff_path) as src:
+        print(f"GeoTIFF CRS: {src.crs} -- verify this matches the UTM zone used by kalman_filter.")
+
     # Resample GeoTIFF at the offset positions (center pixel).
     df['geotiff_value'] = sample_raster_values(geotiff_path, df[x_col], df[y_col])
-    df['below_surface'] = df[depth_col] < df['geotiff_value']
-    df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + 0.5
+    df['below_surface'] = df[depth_col] < df['geotiff_value'] + MIN_CLEARANCE_M
+    df.loc[df['below_surface'], depth_col] = df['geotiff_value'] + MIN_CLEARANCE_M
 
     # New function: sample neighboring pixel values from a window.
     def sample_neighbor_values(raster_path, x, y, window_size=3):
@@ -119,10 +133,10 @@ def process_data(raw_dir, processed_dir):
         current_depth = row[depth_col]
         neighbors = sample_neighbor_values(raster_path, x, y, window_size)
         max_neighbor = np.max(neighbors)
-        # If current_depth is less than 1m above the maximum neighbor elevation,
-        # adjust it to be exactly 1m above.
-        if current_depth - max_neighbor < 1:
-            current_depth = max_neighbor + 0.5
+        # If current_depth is less than MIN_CLEARANCE_M above the maximum
+        # neighbor elevation, raise it to exactly that clearance.
+        if current_depth - max_neighbor < MIN_CLEARANCE_M:
+            current_depth = max_neighbor + MIN_CLEARANCE_M
         return current_depth
 
     # Apply neighbor evaluation to adjust depth further if needed.
@@ -131,19 +145,22 @@ def process_data(raw_dir, processed_dir):
         axis=1
     )
 
-    # Re-evaluate: ensure each new depth is at least 1m above the center pixel's terrain value.
-    below_threshold = df[depth_col] < (df['geotiff_value'])
+    # Re-evaluate: ensure each new depth is at least MIN_CLEARANCE_M above the
+    # center pixel's terrain value.
+    below_threshold = df[depth_col] < (df['geotiff_value'] + MIN_CLEARANCE_M)
     num_adjustments = below_threshold.sum()
     if num_adjustments > 0:
-        df.loc[below_threshold, depth_col] = df.loc[below_threshold, 'geotiff_value'] + 1
-    print(f"After re-evaluation, adjusted {num_adjustments} depth values to ensure they are at least 1m above terrain.")
+        df.loc[below_threshold, depth_col] = df.loc[below_threshold, 'geotiff_value'] + MIN_CLEARANCE_M
+    print(f"After re-evaluation, adjusted {num_adjustments} depth values to ensure "
+          f"they are at least {MIN_CLEARANCE_M}m above terrain.")
 
     # ---- Visualization & Summary Section ----
     # Compute depth difference: (adjusted Depth) - (center pixel value).
     df['depth_diff'] = df[depth_col] - df['geotiff_value']
     total_rows = len(df)
-    num_below = ((df[depth_col] - df['geotiff_value']) < 1).sum()
-    print(f"Depth Summary: {num_below} out of {total_rows} depth values are < 1m above terrain (should be 0).")
+    num_below = ((df[depth_col] - df['geotiff_value']) < MIN_CLEARANCE_M).sum()
+    print(f"Depth Summary: {num_below} out of {total_rows} depth values are "
+          f"< {MIN_CLEARANCE_M}m above terrain (should be 0).")
 
     # Create a scatter plot of offset positions.
     neg_mask = df['depth_diff'] < 0
@@ -157,7 +174,7 @@ def process_data(raw_dir, processed_dir):
             c=df.loc[pos_mask, 'depth_diff'],
             cmap='viridis',
             s=10,
-            label="Depth Diff ≥ 0"
+            label="Depth Diff >= 0"
         )
     if neg_mask.sum() > 0:
         scatter_ax.scatter(
