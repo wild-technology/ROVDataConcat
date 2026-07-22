@@ -67,21 +67,40 @@ def process_data(raw_dir, processed_dir):
     depth_file = processed_dir / f"{expedition}_{dive}_sealog_sensors_merged.csv"
     output_file = processed_dir / f"{expedition}_{dive}_filtered_datatable.csv"
 
-    octans_df = pd.read_csv(octans_file, parse_dates=["Timestamp"], low_memory=False).sort_values("Timestamp")
-    usbl_df = pd.read_csv(usbl_file, parse_dates=["Timestamp"], low_memory=False).sort_values("Timestamp")
-    dvl_df = pd.read_csv(dvl_file, parse_dates=["Timestamp"], low_memory=False).sort_values("Timestamp")
-    depth_df = pd.read_csv(depth_file, parse_dates=["Timestamp"], low_memory=False, quotechar='"').sort_values(
-        "Timestamp")
+    def read_nav_csv(path, label, required=False):
+        """Read one navigation CSV; missing optional inputs return None."""
+        if not path.exists():
+            msg = f"{label} file not found: {path}"
+            if required:
+                raise FileNotFoundError(msg)
+            print(f"Warning: {msg} -- continuing without it.")
+            return None
+        return pd.read_csv(path, parse_dates=["Timestamp"], low_memory=False,
+                           quotechar='"').sort_values("Timestamp")
+
+    # Octans (heading/pitch/roll) and the merged sensor file are essential;
+    # USBL and DVL can legitimately be absent for a dive.
+    octans_df = read_nav_csv(octans_file, "Octans", required=True)
+    depth_df = read_nav_csv(depth_file, "Sealog/sensor merge", required=True)
+    usbl_df = read_nav_csv(usbl_file, "USBL")
+    dvl_df = read_nav_csv(dvl_file, "DVL")
 
     # Rename columns for clarity
-    usbl_df.rename(columns={"Latitude": "Lat_USBL", "Longitude": "Long_USBL", "Accuracy": "Accuracy_USBL"},
-                   inplace=True)
-    dvl_df.rename(columns={"Latitude": "Lat_DVL", "Longitude": "Long_DVL"}, inplace=True)
+    if usbl_df is not None:
+        usbl_df.rename(columns={"Latitude": "Lat_USBL", "Longitude": "Long_USBL",
+                                "Accuracy": "Accuracy_USBL"}, inplace=True)
+    if dvl_df is not None:
+        dvl_df.rename(columns={"Latitude": "Lat_DVL", "Longitude": "Long_DVL"}, inplace=True)
 
-    # Merge all datasets using outer join on Timestamp
-    merged_df = pd.merge(octans_df, usbl_df, on="Timestamp", how="outer")
-    merged_df = pd.merge(merged_df, dvl_df, on="Timestamp", how="outer")
-    merged_df = pd.merge(merged_df, depth_df, on="Timestamp", how="outer")
+    # Merge all available datasets using outer join on Timestamp
+    merged_df = octans_df
+    for other in (usbl_df, dvl_df, depth_df):
+        if other is not None:
+            merged_df = pd.merge(merged_df, other, on="Timestamp", how="outer")
+    # Keep downstream column expectations stable even when a source is absent.
+    for col in ("Lat_USBL", "Long_USBL", "Accuracy_USBL", "Lat_DVL", "Long_DVL"):
+        if col not in merged_df.columns:
+            merged_df[col] = float("nan")
     merged_df.sort_values("Timestamp", inplace=True)
 
     print(f"Merged dataframe shape before filtering: {merged_df.shape}")

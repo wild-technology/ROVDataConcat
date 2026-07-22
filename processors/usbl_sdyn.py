@@ -66,10 +66,21 @@ def parse_sdyn_file(filepath):
                 (time_str, lat_deg, lat_min, lat_dir, lon_deg, lon_min, lon_dir,
                  accuracy, depth, beacon_index, checksum) = match.groups()
 
+                # GPGGA time is fixed-width HHMMSS[.sss]; zero-pad defensively so
+                # a value like '12345.6' parses as 01:23:45.6 rather than being
+                # misread by strptime's lenient 1-2 digit matching.
+                if "." in time_str:
+                    int_part, frac_part = time_str.split(".", 1)
+                    time_str = f"{int_part.zfill(6)}.{frac_part}"
+                else:
+                    time_str = time_str.zfill(6)
                 try:
                     fix_time = datetime.strptime(time_str, "%H%M%S.%f").replace(tzinfo=timezone.utc)
                 except ValueError:
-                    fix_time = datetime.strptime(time_str, "%H%M%S").replace(tzinfo=timezone.utc)
+                    try:
+                        fix_time = datetime.strptime(time_str, "%H%M%S").replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        continue  # malformed time field; skip this fix
 
                 full_timestamp = file_start.replace(
                     hour=fix_time.hour, minute=fix_time.minute,

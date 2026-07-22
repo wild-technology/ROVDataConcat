@@ -75,6 +75,18 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+## Tests
+
+```bash
+pip install pytest
+python -m pytest tests/ -v
+```
+
+Covers the parsers (SDYN/GPGGA including midnight rollover and beacon
+filtering, NavEst OCT/VFR including malformed lines), the shared
+second-alignment/dedup helpers, UTM zone selection, and dive-summary
+construction.
+
 ## Notes
 
 * The USBL "Accuracy" field occupies the HDOP slot of a standard GPGGA

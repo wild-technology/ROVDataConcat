@@ -24,11 +24,6 @@ def to_iso8601(dt_series: pd.Series) -> pd.Series:
     )
 
 
-def parse_utc(series: pd.Series) -> pd.Series:
-    """Parse a Series to timezone-aware UTC datetimes, coercing failures to NaT."""
-    return pd.to_datetime(series.astype(str).str.strip(), utc=True, errors="coerce")
-
-
 def drop_duplicate_timestamps(df: pd.DataFrame, sort_by: str = "Timestamp"):
     """
     Drop rows with duplicate timestamps (keep first) and return the frame
@@ -61,22 +56,41 @@ def best_fix_per_second(df: pd.DataFrame, quality_col: str = None):
 
     orig = len(df)
     work = df.copy()
-    rounded = work["Timestamp"].dt.round("s")
+    # Coerce to datetime64 UTC in case the column arrived as python datetime
+    # objects (object dtype) or strings; drop rows that cannot be parsed.
+    ts = pd.to_datetime(work["Timestamp"], utc=True, errors="coerce")
+    n_bad = int(ts.isna().sum())
+    if n_bad:
+        print(f"  - Dropping {n_bad} rows with unparseable timestamps")
+        work = work[ts.notna()]
+        ts = ts[ts.notna()]
+    if work.empty:
+        return work.reset_index(drop=True), orig, 0
+    work["Timestamp"] = ts
+    work["_rounded"] = ts.dt.round("s")
 
     if quality_col is not None:
-        work["_rounded"] = rounded
-        keep_idx = work.groupby("_rounded")[quality_col].idxmin()
+        # NaN quality must not win a group, and all-NaN groups must not crash
+        # idxmin -- treat missing quality as worst possible.
+        work["_q"] = work[quality_col].fillna(float("inf"))
+        keep_idx = work.groupby("_rounded")["_q"].idxmin()
+        # For two source seconds that round to the same target second, keep the
+        # better-quality row (deterministic via stable sort below).
+        collision_sort = ["_rounded", "_q"]
     else:
-        work["_rounded"] = rounded
-        work["_diff"] = (work["Timestamp"] - rounded).abs()
+        work["_diff"] = (work["Timestamp"] - work["_rounded"]).abs()
         keep_idx = work.groupby("_rounded")["_diff"].idxmin()
+        collision_sort = ["_rounded", "_diff"]
 
     out = work.loc[keep_idx].copy()
-    out.sort_values("_rounded", inplace=True)
+    out.sort_values(collision_sort, kind="mergesort", inplace=True)
     out["Timestamp"] = out["_rounded"].dt.strftime(ISO_FMT)
-    out.drop(columns=[c for c in ("_rounded", "_diff") if c in out.columns], inplace=True)
-    # Rounding can map two source seconds onto one target second; keep first.
+    out.drop(columns=[c for c in ("_rounded", "_diff", "_q") if c in out.columns],
+             inplace=True)
+    # Rounding can map two source seconds onto one target second; the sort
+    # above puts the better candidate first.
     out = out.drop_duplicates(subset=["Timestamp"])
+    out.sort_values("Timestamp", kind="mergesort", inplace=True)
     out.reset_index(drop=True, inplace=True)
     return out, orig, len(out)
 
@@ -116,4 +130,8 @@ def expedition_dive_from_processed_dir(processed_dir: Path):
     processed_dir = Path(processed_dir).resolve()
     dive = processed_dir.name
     expedition = processed_dir.parent.parent.name
+    if processed_dir.parent.name != "RUMI_processed" or not expedition:
+        print(f"Warning: '{processed_dir}' does not match the expected layout "
+              f"<base>/<EXPEDITION>/RUMI_processed/<DIVE>; derived "
+              f"expedition='{expedition}', dive='{dive}'. File names may be wrong.")
     return expedition, dive

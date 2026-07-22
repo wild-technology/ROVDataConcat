@@ -86,6 +86,11 @@ def filter_heading(headings, window_size=11):
 
 def latlon_to_utm(df, lat_col, lon_col, x_col, y_col):
     """Convert latitude/longitude to UTM coordinates dynamically determining UTM zone."""
+    if lat_col not in df.columns or lon_col not in df.columns:
+        print(f"No {lat_col}/{lon_col} columns present; skipping conversion.")
+        df[x_col] = np.nan
+        df[y_col] = np.nan
+        return 0, None
     valid_mask = df[lat_col].notna() & df[lon_col].notna()
     valid_count = valid_mask.sum()
     if valid_count == 0:
@@ -152,6 +157,15 @@ def process_data(raw_dir, processed_dir):
 
         print(f"Loaded {len(df)} rows from input file.")
 
+        for required in ("Herc_Depth_1", "Heading", "Pitch", "Roll"):
+            if required not in df.columns:
+                raise KeyError(
+                    f"Required column '{required}' missing from {input_file.name}; "
+                    f"check the upstream merge (kalman_concat / sensors_sealog outputs)."
+                )
+        if df.empty:
+            raise ValueError(f"{input_file.name} contains no data rows.")
+
         # Filter rows with depth <= -20 m. Note this also drops rows with no
         # depth reading (NaN fails the comparison) -- report both counts.
         original_count = len(df)
@@ -200,9 +214,21 @@ def process_data(raw_dir, processed_dir):
             df["kalman_yaw_deg"] = np.nan
 
         # Initialize an 8D Kalman Filter (excluding yaw, which is handled separately).
+        # Position init prefers USBL, falls back to DVL for USBL-less dives.
         kf = KalmanFilter(dim_x=8, dim_z=1)
-        init_x = df["x_usbl"].dropna().iloc[0] if not df["x_usbl"].dropna().empty else 0.0
-        init_y = df["y_usbl"].dropna().iloc[0] if not df["y_usbl"].dropna().empty else 0.0
+
+        def first_valid(col, fallback_col=None, default=0.0):
+            s = df[col].dropna() if col in df.columns else pd.Series(dtype=float)
+            if not s.empty:
+                return float(s.iloc[0])
+            if fallback_col is not None:
+                s = df[fallback_col].dropna() if fallback_col in df.columns else pd.Series(dtype=float)
+                if not s.empty:
+                    return float(s.iloc[0])
+            return default
+
+        init_x = first_valid("x_usbl", "x_dvl")
+        init_y = first_valid("y_usbl", "y_dvl")
         init_z = df["Herc_Depth_1"].dropna().iloc[0] if not df["Herc_Depth_1"].dropna().empty else 0.0
         init_roll = df["Roll_rad"].dropna().iloc[0] if not df["Roll_rad"].dropna().empty else 0.0
         init_pitch = df["Pitch_rad"].dropna().iloc[0] if not df["Pitch_rad"].dropna().empty else 0.0

@@ -87,7 +87,7 @@ def process_data(raw_dir, processed_dir):
     csv_path = processed_dir / f"{expedition}_{dive}_final_datatable.csv"
     output_file = processed_dir / f"{expedition}_{dive}_filtered_offset_final.csv"
 
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path, low_memory=False)
 
     # Define required columns.
     x_col, y_col, depth_col = 'kalman_x', 'kalman_y', 'kalman_depth'
@@ -104,8 +104,20 @@ def process_data(raw_dir, processed_dir):
     # (sin(h), cos(h)) and "backwards" subtracts it.
     # (Previous code used (cos(h), sin(h)) -- the math-angle convention -- which
     # pointed the offset in the wrong direction for compass headings.)
-    df[x_col] = df[x_col] - (OFFSET_M * np.sin(df[heading_rad_col]))
-    df[y_col] = df[y_col] - (OFFSET_M * np.cos(df[heading_rad_col]))
+    # Rows with no OCTANS heading fall back to the smoothed kalman yaw; if that
+    # is also missing, the position is left un-offset rather than becoming NaN.
+    offset_heading = df[heading_rad_col].copy()
+    if 'kalman_yaw_deg' in df.columns:
+        fallback = np.radians(df['kalman_yaw_deg'])
+        n_fb = int((offset_heading.isna() & fallback.notna()).sum())
+        if n_fb:
+            print(f"Note: {n_fb} rows have no OCTANS heading; using smoothed kalman yaw "
+                  f"for their offset direction.")
+        offset_heading = offset_heading.fillna(fallback)
+    dx = (OFFSET_M * np.sin(offset_heading)).fillna(0.0)
+    dy = (OFFSET_M * np.cos(offset_heading)).fillna(0.0)
+    df[x_col] = df[x_col] - dx
+    df[y_col] = df[y_col] - dy
 
     # Save offset positions for later neighbor evaluation.
     df['Offset_x'] = df[x_col]
@@ -143,9 +155,15 @@ def process_data(raw_dir, processed_dir):
         # samples become NaN so they impose no depth constraint (previously
         # they sampled as 0 and forced the depth to the sea surface).
         coords = list(zip(raster_x, raster_y))
+        finite = [np.isfinite(x) and np.isfinite(y) for x, y in coords]
+        n_bad_coord = len(coords) - sum(finite)
+        if n_bad_coord:
+            print(f"Note: {n_bad_coord} positions have non-finite coordinates and "
+                  f"will not be terrain-adjusted.")
+        safe_coords = [(x, y) if ok else (0.0, 0.0) for (x, y), ok in zip(coords, finite)]
         sampled = [
-            float(val[0]) if not np.ma.is_masked(val[0]) else np.nan
-            for val in src.sample(coords, masked=True)
+            float(val[0]) if (ok and not np.ma.is_masked(val[0])) else np.nan
+            for val, ok in zip(src.sample(safe_coords, masked=True), finite)
         ]
         df['geotiff_value'] = sampled
         n_nodata = int(np.isnan(sampled).sum())
@@ -176,6 +194,8 @@ def process_data(raw_dir, processed_dir):
 
         depths = df[depth_col].to_numpy(copy=True)
         for pos, (x, y) in enumerate(coords):
+            if not finite[pos]:
+                continue
             max_nb = max_neighbor_value(x, y)
             if depths[pos] - max_nb < MIN_CLEARANCE_M:
                 depths[pos] = max_nb + MIN_CLEARANCE_M

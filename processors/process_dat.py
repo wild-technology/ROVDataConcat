@@ -86,6 +86,7 @@ def parse_dat_file_both(filepath):
 
     oct_data = []
     vfr_data = []
+    malformed_lines = 0
 
     with filepath.open('r', encoding='utf-8', errors='ignore') as f:
         for line in f:
@@ -99,9 +100,13 @@ def parse_dat_file_both(filepath):
                 date_str, time_str = oct_match.group(1), oct_match.group(2)
                 dt_str = f"{date_str} {time_str}"
                 try:
-                    dt = datetime.strptime(dt_str, "%Y/%m/%d %H:%M:%S.%f")
+                    try:
+                        dt = datetime.strptime(dt_str, "%Y/%m/%d %H:%M:%S.%f")
+                    except ValueError:
+                        dt = datetime.strptime(dt_str, "%Y/%m/%d %H:%M:%S")
                 except ValueError:
-                    dt = datetime.strptime(dt_str, "%Y/%m/%d %H:%M:%S")
+                    malformed_lines += 1  # e.g. second field of 60+
+                    continue
                 dt = dt.replace(tzinfo=timezone.utc)
                 heading, pitch, roll = map(float, oct_match.group(3, 4, 5))
                 oct_data.append([dt, heading, pitch, roll])
@@ -117,9 +122,13 @@ def parse_dat_file_both(filepath):
                 date_str, time_str = vfr_match.group(1), vfr_match.group(2)
                 dt_str = f"{date_str} {time_str}"
                 try:
-                    dt = datetime.strptime(dt_str, "%Y/%m/%d %H:%M:%S.%f")
+                    try:
+                        dt = datetime.strptime(dt_str, "%Y/%m/%d %H:%M:%S.%f")
+                    except ValueError:
+                        dt = datetime.strptime(dt_str, "%Y/%m/%d %H:%M:%S")
                 except ValueError:
-                    dt = datetime.strptime(dt_str, "%Y/%m/%d %H:%M:%S")
+                    malformed_lines += 1
+                    continue
                 dt = dt.replace(tzinfo=timezone.utc)
                 lon_str = vfr_match.group(6)
                 lat_str = vfr_match.group(7)
@@ -131,6 +140,9 @@ def parse_dat_file_both(filepath):
                 except ValueError:
                     continue
                 vfr_data.append([dt, lon_str, lat_str])
+
+    if malformed_lines:
+        print(f"  - Skipped {malformed_lines} lines with unparseable timestamps in {filepath.name}")
 
     oct_df = pd.DataFrame(oct_data, columns=["Timestamp", "Heading", "Pitch", "Roll"])
     vfr_df = pd.DataFrame(vfr_data, columns=["Timestamp", "Longitude", "Latitude"])

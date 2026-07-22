@@ -62,8 +62,10 @@ def process_data(raw_dir, processed_dir):
         return wrapped.std()
 
     def calculate_consistency(filtered, raw):
+        if filtered is None or raw is None:
+            return np.nan
         min_len = min(len(filtered), len(raw))
-        return np.abs(filtered[:min_len] - raw[:min_len]).mean() if filtered is not None and raw is not None else np.nan
+        return np.abs(filtered[:min_len] - raw[:min_len]).mean()
 
     def calculate_consistency_circular(filtered_deg, raw_deg):
         """Mean absolute angular error, accounting for 0/360 wrap."""
@@ -72,34 +74,35 @@ def process_data(raw_dir, processed_dir):
         diff = (filtered_deg - raw_deg + 180) % 360 - 180
         return np.abs(diff).mean()
 
-    # Compute smoothness metrics.
+    # df.get returns None for absent columns; the calculators treat None as NaN,
+    # so a missing source degrades to an empty metric instead of a crash.
     smoothness_metrics = {
         'Depth': {
-            'Raw': calculate_smoothness(df['Herc_Depth_1']),
-            'Filtered': calculate_smoothness(df['kalman_depth'])
+            'Raw': calculate_smoothness(df.get('Herc_Depth_1')),
+            'Filtered': calculate_smoothness(df.get('kalman_depth'))
         },
         'Roll': {
-            'Raw': calculate_smoothness(df['Roll']),
-            'Filtered': calculate_smoothness(df['kalman_roll_deg'])
+            'Raw': calculate_smoothness(df.get('Roll')),
+            'Filtered': calculate_smoothness(df.get('kalman_roll_deg'))
         },
         'Pitch': {
-            'Raw': calculate_smoothness(df['Pitch']),
-            'Filtered': calculate_smoothness(df['kalman_pitch_deg'])
+            'Raw': calculate_smoothness(df.get('Pitch')),
+            'Filtered': calculate_smoothness(df.get('kalman_pitch_deg'))
         },
         'Yaw': {
-            'Raw': calculate_smoothness_circular(df['Heading']),
-            'Filtered': calculate_smoothness_circular(df['kalman_yaw_deg'])
+            'Raw': calculate_smoothness_circular(df.get('Heading')),
+            'Filtered': calculate_smoothness_circular(df.get('kalman_yaw_deg'))
         }
     }
 
     # Compute consistency metrics.
     consistency_metrics = {
-        'Depth': calculate_consistency(df['kalman_depth'], df['Herc_Depth_1']),
-        'Roll': calculate_consistency(df['kalman_roll_deg'], df['Roll']),
-        'Pitch': calculate_consistency(df['kalman_pitch_deg'], df['Pitch']),
-        'Yaw': calculate_consistency_circular(df['kalman_yaw_deg'], df['Heading']),
-        'X': calculate_consistency(df['kalman_x'], df['x_usbl']),
-        'Y': calculate_consistency(df['kalman_y'], df['y_usbl'])
+        'Depth': calculate_consistency(df.get('kalman_depth'), df.get('Herc_Depth_1')),
+        'Roll': calculate_consistency(df.get('kalman_roll_deg'), df.get('Roll')),
+        'Pitch': calculate_consistency(df.get('kalman_pitch_deg'), df.get('Pitch')),
+        'Yaw': calculate_consistency_circular(df.get('kalman_yaw_deg'), df.get('Heading')),
+        'X': calculate_consistency(df.get('kalman_x'), df.get('x_usbl')),
+        'Y': calculate_consistency(df.get('kalman_y'), df.get('y_usbl'))
     }
 
     # Prepare assessment results.
